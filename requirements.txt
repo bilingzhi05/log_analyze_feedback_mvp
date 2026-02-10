@@ -1,0 +1,9 @@
+fastapi==0.115.6
+uvicorn==0.30.6
+python-multipart==0.0.20
+requests==2.32.3
+streamlit==1.40.2
+streamlit-quill
+streamlit-autorefresh
+beautifulsoup4
+jira

@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>反馈后台</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <div class="container">
+      <h1>后台管理</h1>
+      <section id="login-section">
+        <h2>管理员登录</h2>
+        <div class="field">
+          <label>账号</label>
+          <input type="text" id="login-username" />
+        </div>
+        <div class="field">
+          <label>密码</label>
+          <input type="password" id="login-password" />
+        </div>
+        <div class="field hidden" id="captcha-section">
+          <label>验证码</label>
+          <div class="captcha-line">
+            <input type="text" id="login-captcha" />
+            <span id="captcha-text"></span>
+          </div>
+        </div>
+        <button id="login-button">登录</button>
+        <div id="login-message" class="result"></div>
+      </section>
+
+      <section id="admin-section" class="hidden">
+        <div class="actions">
+          <button id="logout-button">退出登录</button>
+        </div>
+        <h2>统计信息</h2>
+        <div id="stats" class="stats"></div>
+
+        <h2>反馈列表</h2>
+        <div class="filters">
+          <input type="date" id="filter-from" />
+          <input type="date" id="filter-to" />
+          <select id="filter-sentiment">
+            <option value="">情感</option>
+            <option value="like">喜欢</option>
+            <option value="dislike">不喜欢</option>
+          </select>
+          <select id="filter-status">
+            <option value="">状态</option>
+            <option value="pending">待评估</option>
+            <option value="accepted">已采纳</option>
+            <option value="rejected">已拒绝</option>
+            <option value="followup">待跟进</option>
+          </select>
+          <input type="text" id="filter-keyword" placeholder="关键词" />
+          <button id="filter-button">查询</button>
+          <button id="export-csv">导出 CSV</button>
+          <button id="export-json">导出 JSON</button>
+        </div>
+        <div id="feedback-list"></div>
+
+        <h2>日志记录</h2>
+        <div class="filters">
+          <input type="date" id="log-from" />
+          <input type="date" id="log-to" />
+          <select id="log-category">
+            <option value="">类型</option>
+            <option value="job">任务</option>
+            <option value="run">运行</option>
+            <option value="error">错误</option>
+            <option value="analysis">分析</option>
+          </select>
+          <input type="text" id="log-keyword" placeholder="关键词" />
+          <button id="log-filter-button">查询</button>
+          <button id="log-export-csv">导出 CSV</button>
+          <button id="log-export-json">导出 JSON</button>
+        </div>
+        <div id="log-list"></div>
+      </section>
+    </div>
+    <script src="/static/admin.js"></script>
+  </body>
+</html>

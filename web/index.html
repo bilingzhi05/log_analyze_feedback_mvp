@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>建议收集</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <div class="container">
+      <h1>建议收集系统</h1>
+      <div class="notice">
+        提交即表示同意采集 IP 与附件用于反馈分析与处理。
+      </div>
+      <form id="feedback-form">
+        <div class="field">
+          <label>喜欢/不喜欢</label>
+          <div class="options">
+            <label><input type="radio" name="sentiment" value="like" required /> 喜欢</label>
+            <label><input type="radio" name="sentiment" value="dislike" /> 不喜欢</label>
+          </div>
+        </div>
+        <div class="field">
+          <label for="content">建议内容</label>
+          <textarea id="content" name="content" maxlength="2000" required></textarea>
+        </div>
+        <div class="field">
+          <label for="attachments">附件上传（最多 3 个，每个 ≤20MB）</label>
+          <input id="attachments" type="file" name="attachments" multiple />
+          <div class="help">支持 png/jpg/jpeg/webp/pdf/docx/txt/zip/rar</div>
+        </div>
+        <div class="field">
+          <label>用户 IP</label>
+          <input type="text" value="系统自动采集" disabled />
+        </div>
+        <div class="actions">
+          <button type="submit">提交</button>
+          <button type="button" id="reset-button">重新编辑</button>
+        </div>
+      </form>
+      <div id="result" class="result"></div>
+    </div>
+    <script src="/static/app.js"></script>
+  </body>
+</html>
