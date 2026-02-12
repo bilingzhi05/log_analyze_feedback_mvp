@@ -71,16 +71,13 @@ def extract_images_from_html(html_content: str) -> Tuple[str, List[Any]]:
         src = img.get("src", "")
         if src.startswith("data:image/"):
             try:
-                # Format: data:image/png;base64,......
                 header, data = src.split(",", 1)
                 mime_type = header.split(";")[0].split(":")[1]
                 extension = mime_type.split("/")[-1]
                 
-                # Decode base64
                 img_data = base64.b64decode(data)
                 img_buffer = io.BytesIO(img_data)
                 
-                # Generate a unique name
                 filename = f"embedded_image_{uuid.uuid4().hex[:8]}.{extension}"
                 
                 file_obj = PastedFile(img_buffer, filename, mime_type)
@@ -90,7 +87,6 @@ def extract_images_from_html(html_content: str) -> Tuple[str, List[Any]]:
                 continue
 
     return html_content, images
-
 
 def get_user_ip() -> str:
     return st.session_state.get("user_ip", "local")
@@ -114,14 +110,14 @@ def log_event(category: str, message: str, metadata: Dict[str, Any], related_fee
 
 
 def check_rate_limit(user_ip: str) -> None:
-    since = datetime.now() - timedelta(minutes=10)
+    since = datetime.now() - timedelta(sconds=10)
     count = fetch_value(
         connection,
         "SELECT COUNT(*) FROM feedbacks WHERE user_ip = ? AND created_at >= ?",
         (user_ip, since.isoformat()),
     )
-    # if int(count or 0) >= 3:
-    #     raise ValueError("10 分钟内最多提交 3 次，请稍后再试")
+    if int(count or 0) >= 3:
+        raise ValueError("10 分钟内最多提交 3 次，请稍后再试")
 
 
 def save_uploaded_files(files: List[Any], feedback_id: int) -> List[Dict[str, Any]]:
@@ -204,12 +200,12 @@ def post_feedback(sentiment: str, content: str, files: List[Any], retries: int =
     返回值：是否成功与提示信息。
     异常：requests.RequestException 网络异常。
     """
-    # try:
+    try:
     #     validate_sentiment(sentiment)
     #     validate_content(content)
-    #     check_rate_limit(get_user_ip())
-    # except ValueError as error:
-    #     return False, str(error)
+        check_rate_limit(get_user_ip())
+    except ValueError as error:
+        return False, str(error)
 
     created_at = now_iso()
     log(f"提交反馈：时间={created_at},情感={sentiment}, 内容={content.strip()}, IP={get_user_ip()}")
@@ -319,9 +315,6 @@ def render_frontend() -> None:
                 st.rerun()
             else:
                 st.error(message)
-    # if col_reset.button("重新编辑"):
-    #     st.session_state.frontend_reset = True
-    #     st.info("已重新编辑表单，可再次提交")
 
 
 
@@ -551,51 +544,6 @@ def update_review_status(feedback_id: int, status: str, note: str) -> Tuple[bool
     return True, "状态已更新"
 
 
-# def create_jira_issue(feedback_id: int, project_key: str, issue_type: str, priority: str) -> Tuple[bool, str]:
-#     """
-#     功能：为反馈创建 Jira 问题。
-#     参数：feedback_id（反馈 ID）、project_key（项目键）、issue_type（问题类型）、priority（优先级）。
-#     返回值：是否成功与提示信息。
-#     异常：requests.RequestException 网络异常。
-#     """
-#     item = fetch_feedback(feedback_id)
-#     if not item:
-#         return False, "反馈不存在"
-    
-#     # Convert HTML content to text for Jira
-#     content_html = item["content"] or ""
-#     try:
-#         soup = BeautifulSoup(content_html, "html.parser")
-#         description_text = soup.get_text()
-#         if soup.find("img"):
-#             description_text += "\n\n[注：反馈包含内嵌图片，请在反馈系统中查看]"
-#     except Exception:
-#         description_text = content_html
-
-#     jira_key, _ = jira_create_issue(
-#         config.jira_base_url,
-#         config.jira_auth_token,
-#         project_key,
-#         issue_type,
-#         priority,
-#         description_text[:80].replace("\n", " "),
-#         description_text,
-#     )
-#     execute_query(
-#         connection,
-#         "UPDATE feedbacks SET jira_key = ?, updated_at = ? WHERE id = ?",
-#         (jira_key, now_iso(), feedback_id),
-#     )
-#     log_event(
-#         "job",
-#         "创建 Jira",
-#         {"jira_key": jira_key, "project_key": project_key},
-#         related_feedback_id=feedback_id,
-#     )
-#     return True, f"已创建 Jira：{jira_key}"
-
-
-
 def add_jira_issue(feedback_id: int, jira_key: str) -> Tuple[bool, str]:
     """
     功能：为反馈创建 Jira 问题。
@@ -654,7 +602,7 @@ def sync_jira_status(jira_key: str) -> Tuple[bool, str, Optional[str]]:
     if not jira_key or not str(jira_key).strip():
         return False, "Jira 编号为空", None
     status = my_jira.getJiraStatus(str(jira_key).strip())
-    log_event("analysis", "同步 Jira 状态", {"jira_key": jira_key, "status": status})
+    # log_event("analysis", "同步 Jira 状态", {"jira_key": jira_key, "status": status})
     return True, "同步成功", status
 
 
@@ -909,10 +857,12 @@ def render_admin() -> None:
     #     st.session_state.pop("admin_expires_at", None)
     #     st.rerun()
 
-    admin_tab = st.sidebar.radio("管理菜单", ["统计信息", "反馈列表", "日志记录"])
+    admin_tab = st.sidebar.radio("管理菜单", ["统计信息", "反馈列表","标签统计", "日志记录"])
+   
     with st.sidebar:
+        st.markdown("---")
         log_auto_refresh = st.checkbox("自动刷新", value=True, key="log_auto_refresh")
-        log_refresh_interval = st.selectbox("刷新间隔(秒)", options=[5, 10, 30, 60], index=1, key="log_refresh_interval")
+        log_refresh_interval = st.selectbox("刷新间隔(秒)", options=[5, 10, 30, 60, 120], index=1, key="log_refresh_interval")
         if log_refresh_interval:     
             st_autorefresh(log_refresh_interval * 1000, key="log_autorefresh")
     if admin_tab == "统计信息":
@@ -1013,6 +963,148 @@ def render_admin() -> None:
         with col_content:
             render_feedback_list(filters)
 
+    elif admin_tab == "标签统计":
+        col_filters, col_content = st.columns([1, 4]) 
+        from_date = None
+        to_date = None
+        label_name = None
+        created_jql = ""
+        with col_filters:
+            st.subheader("过滤条件")
+            range_option = st.selectbox("时间范围", options=["全部", "今天", "近7天", "本月", "本年", "自定义"], key="label_range_option")
+
+            if range_option == "自定义":
+                from_date = st.date_input("开始日期", key="label_from_date")
+                to_date = st.date_input("结束日期", key="label_to_date")
+            else:
+                from_value, to_value = build_time_range(range_option)
+                if from_value:
+                    from_date = datetime.fromisoformat(from_value).date()
+                if to_value:
+                    to_date = datetime.fromisoformat(to_value).date()
+            label_name = st.text_input("标签", value="LN_TAG_2025_AI", key="label_name")
+            created_jql = st.text_area("JQL_Filter", value="project in (\"OTT projects\") AND status not in (Closed, Done, Resolved, Verified) AND priority in (High, Highest) AND type in (Bug, Sub-bug)", height=120,key="created_jql")
+        
+        with col_content:
+            if not label_name.strip():
+                st.warning("请输入标签")
+            else:
+                if from_date and from_date >= datetime.fromisoformat("2026-02-01").date():
+                    created_jql += f' AND created >= \"{from_date.isoformat()}\"'
+                else:
+                    created_jql += f' AND created >= \"2026-02-01\"'
+                if to_date:
+                    created_jql += f' AND created <= \"{to_date.isoformat()}\"'
+                log(f"created_jql:{created_jql}")
+                # 解析时间计算
+                add_labels_time_items = my_jira.getLabelAppliedTimeWithSql(created_jql, label_name)
+                add_labels_time_items_count = len(add_labels_time_items)
+                log(f"add_labels_time_items_count:{add_labels_time_items_count}")
+                created_label_date_counts: Dict[Any, int] = {}
+                label_time_by_key: Dict[str, datetime] = {}
+                for item in add_labels_time_items:
+                    label_dt = parse_datetime(item.get("label_applied_time"))
+                    if not label_dt:
+                        continue
+                    issue_key = item.get("key")
+                    if issue_key:
+                        label_time_by_key[issue_key] = label_dt
+                    label_date = label_dt.date()
+                    if from_date and label_date < from_date:
+                        continue
+                    if to_date and label_date > to_date:
+                        continue
+                    created_label_date_counts[label_date] = created_label_date_counts.get(label_date, 0) + 1
+
+                create_jiras_time_items = my_jira.getJiraLenWithTime(created_jql)
+                create_jiras_time_items_count = len(create_jiras_time_items)
+                log(f"create_jiras_time_items_count:{create_jiras_time_items_count}")
+                created_jira_date_counts: Dict[Any, int] = {}
+                created_time_by_key: Dict[str, datetime] = {}
+                for item in create_jiras_time_items:
+                    created_dt = parse_datetime(item.get("create_time"))
+                    if not created_dt:
+                        continue
+                    issue_key = item.get("key")
+                    if issue_key:
+                        created_time_by_key[issue_key] = created_dt
+                    created_date = created_dt.date()
+                    if from_date and created_date < from_date:
+                        continue
+                    if to_date and created_date > to_date:
+                        continue
+                    created_jira_date_counts[created_date] = created_jira_date_counts.get(created_date, 0) + 1
+                log(f"created_jira_date_counts:{created_jira_date_counts}")
+                log(f"created_label_date_counts:{created_label_date_counts}")
+
+                delay_minutes_by_date: Dict[Any, List[float]] = {}
+                for issue_key, created_dt in created_time_by_key.items():
+                    label_dt = label_time_by_key.get(issue_key)
+                    if not label_dt:
+                        continue
+                    delay_minutes = (label_dt - created_dt).total_seconds() / 60.0
+                    if delay_minutes < 0:
+                        continue
+                    created_date = created_dt.date()
+                    if from_date and created_date < from_date:
+                        continue
+                    if to_date and created_date > to_date:
+                        continue
+                    delay_minutes_by_date.setdefault(created_date, []).append(delay_minutes)
+
+                import pandas as pd
+                import altair as alt
+                metric_col1, metric_col2, metric_col3 = st.columns(3)
+                metric_col1.metric("创建 Jira 数量", sum(created_jira_date_counts.values()))
+                metric_col2.metric("创建 Label 数量", sum(created_label_date_counts.values()))
+                all_delays = [val for items in delay_minutes_by_date.values() for val in items]
+                metric_col3.metric("平均时间差(分钟)", round(sum(all_delays) / len(all_delays), 2) if all_delays else "-")
+
+                date_index = sorted(set(created_label_date_counts) | set(created_jira_date_counts) | set(delay_minutes_by_date))
+                if not date_index:
+                    st.info("暂无数据")
+                else:
+                    rows = []
+                    for date_value in date_index:
+                        date_label = date_value.isoformat()
+                        delay_values = delay_minutes_by_date.get(date_value, [])
+                        avg_delay = round(sum(delay_values) / len(delay_values), 2) if delay_values else None
+                        rows.append(
+                            {
+                                "日期": date_label,
+                                "Jira数量": created_jira_date_counts.get(date_value, 0),
+                                "Label数量": created_label_date_counts.get(date_value, 0),
+                                "平均时间差(分钟)": avg_delay,
+                            }
+                        )
+
+                    df = pd.DataFrame(rows)
+                    st.dataframe(df, use_container_width=True)
+
+                    date_labels = [value.isoformat() for value in date_index]
+                    counts_df = df.melt(
+                        id_vars=["日期"],
+                        value_vars=["Jira数量", "Label数量"],
+                        var_name="类型",
+                        value_name="数量",
+                    )
+                    chart_counts = alt.Chart(counts_df).mark_bar().encode(
+                        x=alt.X("日期", sort=date_labels, title="日期"),
+                        y=alt.Y("数量:Q", title="数量"),
+                        color=alt.Color("类型", title="类型"),
+                        tooltip=["日期", "类型", "数量"],
+                    )
+                    chart_delay = alt.Chart(df).mark_line(point=True).encode(
+                        x=alt.X("日期", sort=date_labels, title="日期"),
+                        y=alt.Y("平均时间差(分钟):Q", title="平均时间差(分钟)"),
+                        color=alt.value("#ff7f0e"),
+                        tooltip=["日期", "平均时间差(分钟)"],
+                    )
+                    st.altair_chart(
+                        alt.layer(chart_counts, chart_delay).resolve_scale(y="independent"),
+                        use_container_width=True,
+                    )
+            
     elif admin_tab == "日志记录":
         col_filters, col_content = st.columns([1, 4])
         
@@ -1073,5 +1165,5 @@ def render_app() -> None:
 if __name__ == "__main__":
     render_app()
 
-
-# streamlit run streamlit_app.py --server.port 8501 --server.headless true
+# cd /home/bj17300-049u/work/log_analyze_feedback_mvp && source /home/bj17300-049u/work/log_analyze_feedback_mvp/311venv/bin/activate && streamlit run streamlit_app.py --server.port 8501 --server.headless true
+# 

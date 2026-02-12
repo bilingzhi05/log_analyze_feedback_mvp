@@ -2,7 +2,10 @@ import requests
 from typing import Dict, Tuple
 
 import re
+import urllib3
 from jira import JIRA
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 class MyJira:
     
@@ -73,30 +76,58 @@ class MyJira:
     def show_the_commponents(self):
         print(f'------->{self.components_array}')
     
-    def search_issues(self, jql, maxResults=1000):
+    def search_issues(self, jql, maxResults=99999):
         """包装JIRA的search_issues方法"""
         return self.mJira.search_issues(jql, maxResults=maxResults)
 
-    def getJiraLen(self, jql, maxResults=1000):
+    def getJiraLenWithTime(self, jql, maxResults=99999):
+        issues = self.search_issues(jql, maxResults=maxResults)
+        key_time_list = []
+        for issue in issues:
+            issue_time = getattr(getattr(issue, "fields", None), "created", None)
+            key_time_list.append({"key":issue.key, "create_time":issue_time})
+        return key_time_list
+        
+    
+    def getJiraLen(self, jql, maxResults=99999):
         issues = self.search_issues(jql, maxResults=maxResults)
         return len(issues)
+    
+    def getLabelAppliedTime(self, issue_key, label):
+        issue = self.mJira.issue(issue_key, expand="changelog")
+        histories = getattr(getattr(issue, "changelog", None), "histories", [])
+        applied_times = []
+        for history in histories:
+            for item in history.items:
+                if item.field != "labels":
+                    continue
+                to_string = getattr(item, "toString", "") or ""
+                to_value = getattr(item, "to", "") or ""
+                if label in to_string or label in str(to_value):
+                    applied_times.append(history.created)
+        if not applied_times:
+            return None
+        return min(applied_times)
+    
+    def getLabelAppliedTimeWithSql(self, sql, label):
+        issues = self.mJira.search_issues(sql)
+        label_time = []
+
+        for issue in issues:
+            print(f"key:{issue.key}")
+            applied_time = self.getLabelAppliedTime(issue.key, label)
+            if applied_time:
+                label_time.append({"key":issue.key, "label_applied_time":applied_time})
+
+        return label_time
+
 
 
 def main():
     my_jira = MyJira("https://jira.amlogic.com", "lingzhi.bi", "Qwer!23456")
-    status = my_jira.getJiraStatus(key='OTT-91431')
-    print(status)
-    sql = "assignee = \"lingzhi.bi\" AND labels = LN_TAG_2025_AI"
-    lenth = my_jira.getJiraLen(sql)
-    print(lenth)
-    # issues = my_jira.search_issues(sql)
-    # status_counts = {}
-    # for issue in issues:
-    #     status_name = issue.fields.status.name
-    #     status_counts[status_name] = status_counts.get(status_name, 0) + 1
-    # total = len(issues)
-    # print(f"总数: {total}")
-    # for status, count in status_counts.items():
-    #     print(f"{status}: {count}")
+    # sql = "assignee = \"lingzhi.bi\" AND labels = LN_TAG_2025_AI"
+    sql = "project in (\"OTT projects\") AND status not in (Closed, Done, Resolved, Verified) AND priority in (High, Highest) AND type in (Bug, Sub-bug) AND created >= \"2026-02-10\" AND created <= \"2026-02-12\""
+    label_time = my_jira.getLabelAppliedTimeWithSql(sql, "FAE-TOOLS-LOG-EXIST")
+    print(label_time)
 if __name__ == "__main__":
     main()
