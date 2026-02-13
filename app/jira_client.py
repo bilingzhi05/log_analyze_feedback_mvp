@@ -87,11 +87,14 @@ class MyJira:
             :return: 返回jira状态
         """
         sql = f"key = {key}"
-        issues = self.mJira.search_issues(sql)
-        status_counts = {}
+        try:
+            issues = self.mJira.search_issues(sql)
+        except Exception:
+            return "ERROR"
+        if not issues:
+            return "ERROR"
         for issue in issues:
             status_name = issue.fields.status.name
-            # status_counts[status_name] = status_counts.get(status_name, 0) + 1
         return status_name
 
     def show_the_commponents(self):

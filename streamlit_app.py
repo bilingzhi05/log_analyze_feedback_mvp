@@ -19,7 +19,7 @@ from app.auth import (
     verify_captcha,
 )
 from app.config import load_config
-from app.db import execute_query, fetch_all, fetch_one, fetch_value, get_db_connection, init_db
+from app.db import DB
 from app.jira_client import MyJira
 from app.utils import (
     build_attachment_dir,
@@ -38,9 +38,8 @@ from app.logger import log
 
 
 config = load_config()
-connection = get_db_connection(config.database_path)
+db = DB(config.database_path)
 my_jira = MyJira(config.jira_server, config.jira_username, config.jira_password)
-init_db(connection)
 ensure_directory(config.attachments_root)
 
 
@@ -93,8 +92,7 @@ def get_user_ip() -> str:
 
 
 def log_event(category: str, message: str, metadata: Dict[str, Any], related_feedback_id: Optional[int] = None) -> None:
-    execute_query(
-        connection,
+    db.execute_query(
         """
         INSERT INTO logs (created_at, category, message, metadata, related_feedback_id)
         VALUES (?, ?, ?, ?, ?)
@@ -110,14 +108,13 @@ def log_event(category: str, message: str, metadata: Dict[str, Any], related_fee
 
 
 def check_rate_limit(user_ip: str) -> None:
-    since = datetime.now() - timedelta(sconds=10)
-    count = fetch_value(
-        connection,
+    since = datetime.now() - timedelta(seconds=10)
+    count = db.fetch_value(
         "SELECT COUNT(*) FROM feedbacks WHERE user_ip = ? AND created_at >= ?",
         (user_ip, since.isoformat()),
     )
     if int(count or 0) >= 3:
-        raise ValueError("10 分钟内最多提交 3 次，请稍后再试")
+        raise ValueError("10 秒内最多提交 3 次，请稍后再试")
 
 
 def save_uploaded_files(files: List[Any], feedback_id: int) -> List[Dict[str, Any]]:
@@ -146,7 +143,7 @@ def save_uploaded_files(files: List[Any], feedback_id: int) -> List[Dict[str, An
 
 
 def fetch_feedback(feedback_id: int) -> Optional[Dict[str, Any]]:
-    item = fetch_one(connection, "SELECT * FROM feedbacks WHERE id = ?", (feedback_id,))
+    item = db.fetch_one("SELECT * FROM feedbacks WHERE id = ?", (feedback_id,))
     if not item:
         return None
     item["attachments"] = json_loads(item.get("attachments") or "[]")
@@ -209,8 +206,7 @@ def post_feedback(sentiment: str, content: str, files: List[Any], retries: int =
 
     created_at = now_iso()
     log(f"提交反馈：时间={created_at},情感={sentiment}, 内容={content.strip()}, IP={get_user_ip()}")
-    cursor = execute_query(
-        connection,
+    cursor = db.execute_query(
         """
         INSERT INTO feedbacks (created_at, updated_at, sentiment, content, user_ip, attachments, status, jira_key)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -228,8 +224,7 @@ def post_feedback(sentiment: str, content: str, files: List[Any], retries: int =
     )
     feedback_id = int(cursor.lastrowid)
     attachments = save_uploaded_files(files, feedback_id) if files else []
-    execute_query(
-        connection,
+    db.execute_query(
         "UPDATE feedbacks SET attachments = ?, updated_at = ? WHERE id = ?",
         (json_dumps(attachments), now_iso(), feedback_id),
     )
@@ -347,10 +342,9 @@ def list_feedbacks(filters: Dict[str, Any]) -> Dict[str, Any]:
 
     where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
     log(f"where_clause={where_clause} params={params}")
-    total = fetch_value(connection, f"SELECT COUNT(*) FROM feedbacks {where_clause}", tuple(params))
+    total = db.fetch_value(f"SELECT COUNT(*) FROM feedbacks {where_clause}", tuple(params))
     offset = (page - 1) * page_size
-    rows = fetch_all(
-        connection,
+    rows = db.fetch_all(
         f"""
         SELECT id, created_at, sentiment, content, user_ip, status, jira_key, attachments
         FROM feedbacks
@@ -396,10 +390,9 @@ def list_logs(filters: Dict[str, Any]) -> Dict[str, Any]:
         params.append(to_time.isoformat())
 
     where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
-    total = fetch_value(connection, f"SELECT COUNT(*) FROM logs {where_clause}", tuple(params))
+    total = db.fetch_value(f"SELECT COUNT(*) FROM logs {where_clause}", tuple(params))
     offset = (page - 1) * page_size
-    rows = fetch_all(
-        connection,
+    rows = db.fetch_all(
         f"""
         SELECT id, created_at, category, message, metadata, related_feedback_id
         FROM logs
@@ -415,24 +408,21 @@ def list_logs(filters: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def stats_feedbacks(days_range: int = 7) -> Dict[str, Any]:
-    total = fetch_value(connection, "SELECT COUNT(*) FROM feedbacks")
-    like_count = fetch_value(connection, "SELECT COUNT(*) FROM feedbacks WHERE sentiment = 'like'")
-    dislike_count = fetch_value(connection, "SELECT COUNT(*) FROM feedbacks WHERE sentiment = 'dislike'")
+    total = db.fetch_value("SELECT COUNT(*) FROM feedbacks")
+    like_count = db.fetch_value("SELECT COUNT(*) FROM feedbacks WHERE sentiment = 'like'")
+    dislike_count = db.fetch_value("SELECT COUNT(*) FROM feedbacks WHERE sentiment = 'dislike'")
     days = format_recent_days(days_range)
     daily = []
     for day in days:
-        count = fetch_value(
-            connection,
+        count = db.fetch_value(
             "SELECT COUNT(*) FROM feedbacks WHERE created_at BETWEEN ? AND ?",
             (f"{day}T00:00:00+00:00", f"{day}T23:59:59+00:00"),
         )
-        day_like = fetch_value(
-            connection,
+        day_like = db.fetch_value(
             "SELECT COUNT(*) FROM feedbacks WHERE sentiment = 'like' AND created_at BETWEEN ? AND ?",
             (f"{day}T00:00:00+00:00", f"{day}T23:59:59+00:00"),
         )
-        day_dislike = fetch_value(
-            connection,
+        day_dislike = db.fetch_value(
             "SELECT COUNT(*) FROM feedbacks WHERE sentiment = 'dislike' AND created_at BETWEEN ? AND ?",
             (f"{day}T00:00:00+00:00", f"{day}T23:59:59+00:00"),
         )
@@ -453,24 +443,24 @@ def login_admin(username: str, password: str, captcha_id: str, captcha_code: str
     异常：requests.RequestException 网络异常。
     """
     user_ip = get_user_ip()
-    failure_count = get_failure_count(connection, username, user_ip)
+    failure_count = get_failure_count(db, username, user_ip)
     if failure_count >= 3:
         if not captcha_id or not captcha_code:
-            captcha_id, captcha_text = create_captcha(connection)
+            captcha_id, captcha_text = create_captcha(db)
             return False, "需要验证码", {"need_captcha": True, "captcha_id": captcha_id, "captcha_text": captcha_text}
-        if not verify_captcha(connection, captcha_id, captcha_code):
-            captcha_id, captcha_text = create_captcha(connection)
+        if not verify_captcha(db, captcha_id, captcha_code):
+            captcha_id, captcha_text = create_captcha(db)
             return False, "验证码错误", {"need_captcha": True, "captcha_id": captcha_id, "captcha_text": captcha_text}
 
     if username != config.admin_username or password != config.admin_password:
-        record_login_failure(connection, username, user_ip)
-        failure_count = get_failure_count(connection, username, user_ip)
+        record_login_failure(db, username, user_ip)
+        failure_count = get_failure_count(db, username, user_ip)
         if failure_count >= 3:
-            captcha_id, captcha_text = create_captcha(connection)
+            captcha_id, captcha_text = create_captcha(db)
             return False, "需要验证码", {"need_captcha": True, "captcha_id": captcha_id, "captcha_text": captcha_text}
         return False, "账号或密码错误", {}
 
-    reset_login_failures(connection, username, user_ip)
+    reset_login_failures(db, username, user_ip)
     st.session_state.admin_logged_in = True
     st.session_state.admin_expires_at = (datetime.now() + timedelta(hours=24)).isoformat()
     return True, "登录成功", {}
@@ -530,8 +520,7 @@ def update_review_status(feedback_id: int, status: str, note: str) -> Tuple[bool
     item = fetch_feedback(feedback_id)
     if not item:
         return False, "反馈不存在"
-    execute_query(
-        connection,
+    db.execute_query(
         "UPDATE feedbacks SET status = ?, updated_at = ? WHERE id = ?",
         (status, now_iso(), feedback_id),
     )
@@ -555,8 +544,7 @@ def add_jira_issue(feedback_id: int, jira_key: str) -> Tuple[bool, str]:
     if not item:
         return False, "反馈不存在"
     
-    execute_query(
-        connection,
+    db.execute_query(
         "UPDATE feedbacks SET jira_key = ?, updated_at = ? WHERE id = ?",
         (jira_key, now_iso(), feedback_id),
     )
@@ -579,8 +567,7 @@ def remove_jira_issue(feedback_id: int) -> Tuple[bool, str]:
     if not item:
         return False, "反馈不存在"
     
-    execute_query(
-        connection,
+    db.execute_query(
         "UPDATE feedbacks SET jira_key = ?, updated_at = ? WHERE id = ?",
         (None, now_iso(), feedback_id),
     )
@@ -602,6 +589,8 @@ def sync_jira_status(jira_key: str) -> Tuple[bool, str, Optional[str]]:
     if not jira_key or not str(jira_key).strip():
         return False, "Jira 编号为空", None
     status = my_jira.getJiraStatus(str(jira_key).strip())
+    if status == "ERROR":
+        return False, "Jira 编号不存在", None
     # log_event("analysis", "同步 Jira 状态", {"jira_key": jira_key, "status": status})
     return True, "同步成功", status
 
@@ -735,7 +724,39 @@ def render_feedback_list(filters: Dict[str, Any]) -> None:
                 st.markdown(f"Jira：{jira_url}")
             else:
                 st.write("Jira：-")
+
+            if st.button("删除反馈", key=f"delete_{item['id']}"):
+                db.execute_query("DELETE FROM feedbacks WHERE id = ?", (item['id'],))
+                log_event("job", "删除反馈", {"feedback_id": item['id']})
+                st.success("反馈已删除")
+                st.rerun()
+                return
             
+            if not item.get("jira_key"):
+                jira_key_input = st.text_input("Jira 编号", key=f"jira_key_{item['id']}")
+                if st.button("添加 Jira号", key=f"add_jira_{item['id']}"):
+                    jira_key_value = jira_key_input.strip()
+                    if jira_key_value:
+                        ok_sync, _, status_text = sync_jira_status(jira_key_value)
+                        if ok_sync and status_text:
+                            ok_jira, message = add_jira_issue(item["id"], jira_key_value)
+                            if ok_jira:
+                                st.success(f"{message}：状态：{status_text}")
+                                st.rerun()
+                            else:
+                                st.error(message)
+                        else:
+                            st.error("请检查后输入有效的 Jira 编号")
+                    else:
+                        st.error("请输入有效的 Jira 编号")
+
+            if item.get("jira_key") and st.button("删除 Jira号", key=f"del_jira_{item['id']}"):
+                ok_del, msg = remove_jira_issue(item["id"])
+                if ok_del:
+                    st.success(msg)
+                    st.rerun()
+                else:
+                    st.error(msg)
             st.markdown("---")
             st.markdown("### 详细内容")
             # Render HTML content safely
@@ -772,34 +793,11 @@ def render_feedback_list(filters: Dict[str, Any]) -> None:
                 ok_status, message = update_review_status(item["id"], status, note)
                 if ok_status:
                     st.success(message)
+                    st.rerun()
                 else:
                     st.error(message)
-            jira_key_input = st.text_input("Jira 编号", key=f"jira_key_{item['id']}")
             # log(f"jira_key_input={jira_key_input}")
-            col_add, col_remove = st.columns(2)
-            with col_add:
-                if st.button("添加 Jira号", key=f"add_jira_{item['id']}"):
-                    jira_key_value = jira_key_input.strip()
-                    if jira_key_value:
-                        ok_jira, message = add_jira_issue(item["id"], jira_key_value)
-                        if ok_jira:
-                            ok_sync, _, status_text = sync_jira_status(jira_key_value)
-                            if ok_sync and status_text:
-                                st.success(f"{message}：状态：{status_text}")
-                            else:
-                                st.success(message)
-                        else:
-                            st.error(message)
-                    else:
-                        st.error("请输入有效的 Jira 编号")
-            with col_remove:
-                if st.button("删除 Jira号", key=f"del_jira_{item['id']}"):
-                    ok_del, msg = remove_jira_issue(item["id"])
-                    if ok_del:
-                        st.success(msg)
-                        st.rerun()
-                    else:
-                        st.error(msg)
+
 
 
 def render_logs(filters: Dict[str, Any]) -> None:

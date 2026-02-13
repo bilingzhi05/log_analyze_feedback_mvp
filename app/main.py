@@ -20,7 +20,7 @@ from .auth import (
     verify_captcha,
 )
 from .config import load_config
-from .db import execute_query, fetch_all, fetch_one, fetch_value, get_db_connection, init_db
+from .db import DB
 from .jira_client import create_jira_issue, get_jira_status
 from .utils import (
     build_attachment_dir,
@@ -40,8 +40,7 @@ from .utils import (
 
 
 config = load_config()
-connection = get_db_connection(config.database_path)
-init_db(connection)
+db = DB(config.database_path)
 ensure_directory(config.attachments_root)
 
 app = FastAPI()
@@ -62,8 +61,7 @@ def log_event(
     返回值：无。
     异常：sqlite3.Error 数据库执行错误。
     """
-    execute_query(
-        connection,
+    db.execute_query(
         """
         INSERT INTO logs (created_at, category, message, metadata, related_feedback_id)
         VALUES (?, ?, ?, ?, ?)
@@ -106,8 +104,7 @@ def check_rate_limit(user_ip: str) -> None:
     异常：HTTPException 超过限制。
     """
     since = (datetime.now() - timedelta(minutes=10)).isoformat()
-    count = fetch_value(
-        connection,
+    count = db.fetch_value(
         """
         SELECT COUNT(*) FROM feedbacks
         WHERE user_ip = ? AND created_at >= ?
@@ -125,7 +122,7 @@ def fetch_feedback(feedback_id: int) -> Dict[str, Any]:
     返回值：反馈数据字典。
     异常：HTTPException 反馈不存在。
     """
-    row = fetch_one(connection, "SELECT * FROM feedbacks WHERE id = ?", (feedback_id,))
+    row = db.fetch_one("SELECT * FROM feedbacks WHERE id = ?", (feedback_id,))
     if not row:
         raise HTTPException(status_code=404, detail="反馈不存在")
     row["attachments"] = json_loads(row["attachments"])
@@ -198,8 +195,7 @@ async def create_feedback(request: Request) -> JSONResponse:
         raise HTTPException(status_code=400, detail=str(error)) from error
 
     created_at = now_iso()
-    cursor = execute_query(
-        connection,
+    cursor = db.execute_query(
         """
         INSERT INTO feedbacks (
             created_at, updated_at, sentiment, content, user_ip, attachments, status, jira_key
@@ -225,8 +221,7 @@ async def create_feedback(request: Request) -> JSONResponse:
                 raise HTTPException(status_code=400, detail="附件扫描未通过")
             attachments_info.append(info)
 
-    execute_query(
-        connection,
+    db.execute_query(
         """
         UPDATE feedbacks SET attachments = ?, updated_at = ?
         WHERE id = ?
@@ -245,7 +240,7 @@ async def list_feedbacks(request: Request) -> JSONResponse:
     返回值：JSONResponse，包含列表与分页信息。
     异常：HTTPException 权限或参数错误。
     """
-    require_admin(request, connection)
+    require_admin(request, db)
     try:
         pagination = parse_pagination(request)
     except ValueError as error:
@@ -275,14 +270,12 @@ async def list_feedbacks(request: Request) -> JSONResponse:
         params.append(to_time.isoformat())
     where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
 
-    total = fetch_value(
-        connection,
+    total = db.fetch_value(
         f"SELECT COUNT(*) FROM feedbacks {where_clause}",
         tuple(params),
     )
     offset = (pagination["page"] - 1) * pagination["page_size"]
-    items = fetch_all(
-        connection,
+    items = db.fetch_all(
         f"""
         SELECT id, created_at, sentiment, content, user_ip, status, jira_key
         FROM feedbacks
@@ -312,7 +305,7 @@ async def get_feedback_detail(request: Request, feedback_id: int) -> JSONRespons
     返回值：JSONResponse，包含反馈详情。
     异常：HTTPException 反馈不存在或权限错误。
     """
-    require_admin(request, connection)
+    require_admin(request, db)
     feedback = fetch_feedback(feedback_id)
     return JSONResponse(feedback)
 
@@ -325,14 +318,13 @@ async def review_feedback(request: Request, feedback_id: int) -> JSONResponse:
     返回值：JSONResponse，包含更新后的反馈。
     异常：HTTPException 状态非法或权限错误。
     """
-    reviewer = require_admin(request, connection)
+    reviewer = require_admin(request, db)
     data = await request.json()
     status = str(data.get("status") or "")
     note = str(data.get("note") or "")
     if status not in {"pending", "accepted", "rejected", "followup"}:
         raise HTTPException(status_code=400, detail="状态非法")
-    execute_query(
-        connection,
+    db.execute_query(
         "UPDATE feedbacks SET status = ?, updated_at = ? WHERE id = ?",
         (status, now_iso(), feedback_id),
     )
@@ -354,10 +346,10 @@ async def delete_feedback(request: Request, feedback_id: int) -> JSONResponse:
     返回值：JSONResponse，包含删除结果。
     异常：HTTPException 反馈不存在或权限错误。
     """
-    operator = require_admin(request, connection)
+    operator = require_admin(request, db)
     feedback = fetch_feedback(feedback_id)
     delete_feedback_files(feedback.get("attachments", []))
-    execute_query(connection, "DELETE FROM feedbacks WHERE id = ?", (feedback_id,))
+    db.execute_query("DELETE FROM feedbacks WHERE id = ?", (feedback_id,))
     log_event("analysis", "反馈删除", {"operator": operator}, feedback_id)
     return JSONResponse({"deleted": True})
 
@@ -370,7 +362,7 @@ async def create_feedback_jira(request: Request, feedback_id: int) -> JSONRespon
     返回值：JSONResponse，包含 jira_key 与 url。
     异常：HTTPException 配置缺失或创建失败。
     """
-    operator = require_admin(request, connection)
+    operator = require_admin(request, db)
     feedback = fetch_feedback(feedback_id)
     data = await request.json()
     project_key = str(data.get("project_key") or config.jira_project_key or "")
@@ -400,8 +392,7 @@ async def create_feedback_jira(request: Request, feedback_id: int) -> JSONRespon
     except Exception as error:
         log_event("error", "Jira 创建失败", {"error": str(error)}, feedback_id)
         raise HTTPException(status_code=502, detail="Jira 创建失败") from error
-    execute_query(
-        connection,
+    db.execute_query(
         "UPDATE feedbacks SET jira_key = ?, updated_at = ? WHERE id = ?",
         (jira_key, now_iso(), feedback_id),
     )
@@ -422,7 +413,7 @@ async def get_jira_info(request: Request, jira_key: str) -> JSONResponse:
     返回值：JSONResponse，包含状态与链接。
     异常：HTTPException 配置缺失或查询失败。
     """
-    require_admin(request, connection)
+    require_admin(request, db)
     if not (config.jira_base_url and config.jira_auth_token):
         raise HTTPException(status_code=400, detail="Jira 配置缺失")
     try:
@@ -445,13 +436,13 @@ async def stats_feedbacks(request: Request) -> JSONResponse:
     返回值：JSONResponse，包含统计数据。
     异常：HTTPException 权限错误。
     """
-    require_admin(request, connection)
-    total = fetch_value(connection, "SELECT COUNT(*) FROM feedbacks")
-    like_count = fetch_value(
-        connection, "SELECT COUNT(*) FROM feedbacks WHERE sentiment = 'like'"
+    require_admin(request, db)
+    total = db.fetch_value("SELECT COUNT(*) FROM feedbacks")
+    like_count = db.fetch_value(
+        "SELECT COUNT(*) FROM feedbacks WHERE sentiment = 'like'"
     )
-    dislike_count = fetch_value(
-        connection, "SELECT COUNT(*) FROM feedbacks WHERE sentiment = 'dislike'"
+    dislike_count = db.fetch_value(
+        "SELECT COUNT(*) FROM feedbacks WHERE sentiment = 'dislike'"
     )
     days = format_recent_days(7)
     recent_7d = []
@@ -459,8 +450,7 @@ async def stats_feedbacks(request: Request) -> JSONResponse:
         next_day = (
             datetime.fromisoformat(day) + timedelta(days=1)
         ).date().isoformat()
-        count = fetch_value(
-            connection,
+        count = db.fetch_value(
             """
             SELECT COUNT(*) FROM feedbacks
             WHERE created_at >= ? AND created_at < ?
@@ -486,7 +476,7 @@ async def list_logs(request: Request) -> Response:
     返回值：JSONResponse 或 StreamingResponse。
     异常：HTTPException 权限或参数错误。
     """
-    require_admin(request, connection)
+    require_admin(request, db)
     try:
         pagination = parse_pagination(request, default_size=50)
     except ValueError as error:
@@ -514,8 +504,7 @@ async def list_logs(request: Request) -> Response:
     where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
 
     if export_format in {"csv", "json"}:
-        items = fetch_all(
-            connection,
+        items = db.fetch_all(
             f"""
             SELECT id, created_at, category, message, metadata, related_feedback_id
             FROM logs
@@ -547,14 +536,12 @@ async def list_logs(request: Request) -> Response:
             headers={"Content-Disposition": "attachment; filename=logs.csv"},
         )
 
-    total = fetch_value(
-        connection,
+    total = db.fetch_value(
         f"SELECT COUNT(*) FROM logs {where_clause}",
         tuple(params),
     )
     offset = (pagination["page"] - 1) * pagination["page_size"]
-    items = fetch_all(
-        connection,
+    items = db.fetch_all(
         f"""
         SELECT id, created_at, category, message, metadata, related_feedback_id
         FROM logs
@@ -582,7 +569,7 @@ async def export_feedbacks(request: Request) -> Response:
     返回值：StreamingResponse 或 JSONResponse。
     异常：HTTPException 权限或参数错误。
     """
-    require_admin(request, connection)
+    require_admin(request, db)
     export_format = request.query_params.get("format", "csv")
     from_time = parse_datetime(request.query_params.get("from"))
     to_time = parse_datetime(request.query_params.get("to"))
@@ -597,16 +584,14 @@ async def export_feedbacks(request: Request) -> Response:
         params.append(to_time.isoformat())
     where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
 
-    total = fetch_value(
-        connection,
+    total = db.fetch_value(
         f"SELECT COUNT(*) FROM feedbacks {where_clause}",
         tuple(params),
     )
     if int(total or 0) > 50000:
         raise HTTPException(status_code=400, detail="单次导出最多 5 万条")
 
-    items = fetch_all(
-        connection,
+    items = db.fetch_all(
         f"""
         SELECT id, created_at, sentiment, content, user_ip, attachments, status, jira_key
         FROM feedbacks
@@ -658,27 +643,27 @@ async def admin_login(request: Request) -> JSONResponse:
     captcha_id = str(data.get("captcha_id") or "")
     captcha_code = str(data.get("captcha_code") or "")
     user_ip = get_client_ip(request)
-    need_captcha = get_failure_count(connection, username, user_ip) >= 3
+    need_captcha = get_failure_count(db, username, user_ip) >= 3
     if need_captcha:
-        if not (captcha_id and captcha_code and verify_captcha(connection, captcha_id, captcha_code)):
-            new_captcha_id, captcha_text = create_captcha(connection)
+        if not (captcha_id and captcha_code and verify_captcha(db, captcha_id, captcha_code)):
+            new_captcha_id, captcha_text = create_captcha(db)
             raise HTTPException(
                 status_code=401,
                 detail={"need_captcha": True, "captcha_id": new_captcha_id, "captcha_text": captcha_text},
             )
 
     if username != config.admin_username or password != config.admin_password:
-        failures = record_login_failure(connection, username, user_ip)
+        failures = record_login_failure(db, username, user_ip)
         if failures >= 3:
-            new_captcha_id, captcha_text = create_captcha(connection)
+            new_captcha_id, captcha_text = create_captcha(db)
             raise HTTPException(
                 status_code=401,
                 detail={"need_captcha": True, "captcha_id": new_captcha_id, "captcha_text": captcha_text},
             )
         raise HTTPException(status_code=401, detail="账号或密码错误")
 
-    reset_login_failures(connection, username, user_ip)
-    session_id, expires_at = create_session(connection, username)
+    reset_login_failures(db, username, user_ip)
+    session_id, expires_at = create_session(db, username)
     response = JSONResponse({"ok": True, "expires_at": expires_at})
     response.set_cookie("admin_session", session_id, httponly=True, max_age=24 * 3600)
     log_event("run", "管理员登录", {"username": username})
@@ -694,7 +679,7 @@ async def admin_logout(request: Request) -> JSONResponse:
     异常：HTTPException 权限错误。
     """
     response = JSONResponse({"ok": True})
-    clear_session(response, connection, request)
+    clear_session(response, db, request)
     return response
 
 
@@ -706,5 +691,5 @@ async def admin_me(request: Request) -> JSONResponse:
     返回值：JSONResponse，包含用户名。
     异常：HTTPException 权限错误。
     """
-    username = require_admin(request, connection)
+    username = require_admin(request, db)
     return JSONResponse({"username": username})
