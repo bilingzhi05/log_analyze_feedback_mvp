@@ -52,6 +52,27 @@ class MyJira:
         else:
             print("没有附件")
 
+    def getEarliestAttachmentTime(self, issue, patern):
+        fields = self.mJira.issue(id=issue.id, expand="attachment").fields
+        attachments = fields.attachment
+        if not attachments:
+            return None
+        created_times = []
+        if len(attachments) != 0:
+            need_dealwith = []
+            no_need_dealwith =[]
+            for att in attachments:
+                file_name = f"{att.filename}"
+                if not re.match(patern, file_name):
+                    no_need_dealwith.append(file_name)
+                    continue
+                if getattr(att, "created", None):
+                    need_dealwith.append(file_name)
+                    created_times.append(att.created)
+        if not created_times:
+            return None
+        return min(created_times)
+
     def getAllComponents(self):
         for project in self.mJira.projects():
             components = self.mJira.project_components(project)
@@ -114,12 +135,23 @@ class MyJira:
         label_time = []
 
         for issue in issues:
-            print(f"key:{issue.key}")
             applied_time = self.getLabelAppliedTime(issue.key, label)
             if applied_time:
                 label_time.append({"key":issue.key, "label_applied_time":applied_time})
 
         return label_time
+
+    def getEarliestAttachmentTimeWithSql(self, sql, patern=r".*\.(log|txt|zip|rar|7z)$"):
+        issues = self.mJira.search_issues(sql)
+        attachment_time = []
+        # print(f"issues:{issues}")
+        for issue in issues:
+            earliest_time = self.getEarliestAttachmentTime(issue, patern)
+            if earliest_time:
+                attachment_time.append({"key":issue.key, "attachment_time":earliest_time})
+
+        return attachment_time
+    
 
 
 
@@ -127,7 +159,7 @@ def main():
     my_jira = MyJira("https://jira.amlogic.com", "lingzhi.bi", "Qwer!23456")
     # sql = "assignee = \"lingzhi.bi\" AND labels = LN_TAG_2025_AI"
     sql = "project in (\"OTT projects\") AND status not in (Closed, Done, Resolved, Verified) AND priority in (High, Highest) AND type in (Bug, Sub-bug) AND created >= \"2026-02-10\" AND created <= \"2026-02-12\""
-    label_time = my_jira.getLabelAppliedTimeWithSql(sql, "FAE-TOOLS-LOG-EXIST")
+    label_time = my_jira.getEarliestAttachmentTimeWithSql(sql)
     print(label_time)
 if __name__ == "__main__":
     main()

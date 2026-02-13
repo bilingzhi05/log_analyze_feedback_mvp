@@ -969,6 +969,8 @@ def render_admin() -> None:
         to_date = None
         label_name = None
         created_jql = ""
+        label_stats_df = None
+        label_detail_df = None
         with col_filters:
             st.subheader("过滤条件")
             range_option = st.selectbox("时间范围", options=["全部", "今天", "近7天", "本月", "本年", "自定义"], key="label_range_option")
@@ -982,8 +984,10 @@ def render_admin() -> None:
                     from_date = datetime.fromisoformat(from_value).date()
                 if to_value:
                     to_date = datetime.fromisoformat(to_value).date()
-            label_name = st.text_input("标签", value="LN_TAG_2025_AI", key="label_name")
+            label_name = st.text_input("标签", value="SE-LN-LOG-2026", key="label_name")
             created_jql = st.text_area("JQL_Filter", value="project in (\"OTT projects\") AND status not in (Closed, Done, Resolved, Verified) AND priority in (High, Highest) AND type in (Bug, Sub-bug)", height=120,key="created_jql")
+            st.subheader("导出")
+            export_filename = st.text_input("导出文件名 (可选，不含扩展名)", key="label_export_name")
         
         with col_content:
             if not label_name.strip():
@@ -1016,13 +1020,13 @@ def render_admin() -> None:
                         continue
                     created_label_date_counts[label_date] = created_label_date_counts.get(label_date, 0) + 1
 
-                create_jiras_time_items = my_jira.getJiraLenWithTime(created_jql)
-                create_jiras_time_items_count = len(create_jiras_time_items)
-                log(f"create_jiras_time_items_count:{create_jiras_time_items_count}")
-                created_jira_date_counts: Dict[Any, int] = {}
+                add_attachemt_time_items = my_jira.getEarliestAttachmentTimeWithSql(created_jql)
+                add_attachemt_time_items_count = len(add_attachemt_time_items)
+                log(f"add_attachemt_time_items_count:{add_attachemt_time_items_count}")
+                created_attachment_date_counts: Dict[Any, int] = {}
                 created_time_by_key: Dict[str, datetime] = {}
-                for item in create_jiras_time_items:
-                    created_dt = parse_datetime(item.get("create_time"))
+                for item in add_attachemt_time_items:
+                    created_dt = parse_datetime(item.get("attachment_time"))
                     if not created_dt:
                         continue
                     issue_key = item.get("key")
@@ -1033,8 +1037,8 @@ def render_admin() -> None:
                         continue
                     if to_date and created_date > to_date:
                         continue
-                    created_jira_date_counts[created_date] = created_jira_date_counts.get(created_date, 0) + 1
-                log(f"created_jira_date_counts:{created_jira_date_counts}")
+                    created_attachment_date_counts[created_date] = created_attachment_date_counts.get(created_date, 0) + 1
+                log(f"created_attachment_date_counts:{created_attachment_date_counts}")
                 log(f"created_label_date_counts:{created_label_date_counts}")
 
                 delay_minutes_by_date: Dict[Any, List[float]] = {}
@@ -1054,56 +1058,88 @@ def render_admin() -> None:
 
                 import pandas as pd
                 import altair as alt
-                metric_col1, metric_col2, metric_col3 = st.columns(3)
-                metric_col1.metric("创建 Jira 数量", sum(created_jira_date_counts.values()))
+                metric_col1, metric_col2 = st.columns(2)
+                metric_col1.metric("创建 Attachment 数量", sum(created_attachment_date_counts.values()))
                 metric_col2.metric("创建 Label 数量", sum(created_label_date_counts.values()))
-                all_delays = [val for items in delay_minutes_by_date.values() for val in items]
-                metric_col3.metric("平均时间差(分钟)", round(sum(all_delays) / len(all_delays), 2) if all_delays else "-")
 
-                date_index = sorted(set(created_label_date_counts) | set(created_jira_date_counts) | set(delay_minutes_by_date))
+                date_index = sorted(set(created_label_date_counts) | set(created_attachment_date_counts))
                 if not date_index:
                     st.info("暂无数据")
                 else:
                     rows = []
                     for date_value in date_index:
                         date_label = date_value.isoformat()
-                        delay_values = delay_minutes_by_date.get(date_value, [])
-                        avg_delay = round(sum(delay_values) / len(delay_values), 2) if delay_values else None
                         rows.append(
                             {
                                 "日期": date_label,
-                                "Jira数量": created_jira_date_counts.get(date_value, 0),
+                                "Attachment数量": created_attachment_date_counts.get(date_value, 0),
                                 "Label数量": created_label_date_counts.get(date_value, 0),
-                                "平均时间差(分钟)": avg_delay,
                             }
                         )
 
                     df = pd.DataFrame(rows)
+                    label_stats_df = df
+                    detail_rows = []
+                    for issue_key in sorted(set(created_time_by_key) | set(label_time_by_key)):
+                        created_dt = created_time_by_key.get(issue_key)
+                        label_dt = label_time_by_key.get(issue_key)
+                        delay_minutes = None
+                        if created_dt and label_dt:
+                            delay_minutes = round((label_dt - created_dt).total_seconds() / 60.0, 2)
+                        detail_rows.append(
+                            {
+                                "key": issue_key,
+                                "created_time": created_dt.isoformat() if created_dt else "",
+                                "label_time": label_dt.isoformat() if label_dt else "",
+                                "delay_minutes": delay_minutes,
+                            }
+                        )
+                    label_detail_df = pd.DataFrame(detail_rows)
                     st.dataframe(df, use_container_width=True)
 
                     date_labels = [value.isoformat() for value in date_index]
                     counts_df = df.melt(
                         id_vars=["日期"],
-                        value_vars=["Jira数量", "Label数量"],
+                        value_vars=["Attachment数量", "Label数量"],
                         var_name="类型",
                         value_name="数量",
                     )
-                    chart_counts = alt.Chart(counts_df).mark_bar().encode(
-                        x=alt.X("日期", sort=date_labels, title="日期"),
-                        y=alt.Y("数量:Q", title="数量"),
+                    chart_counts = alt.Chart(counts_df).mark_bar(size=24).encode(
+                        x=alt.X(
+                            "日期", 
+                            sort=date_labels, 
+                            title="日期", 
+                            scale=alt.Scale(paddingInner=0.0, paddingOuter=0.01),
+                        ),
+                        xOffset=alt.XOffset("类型", sort=["Attachment数量", "Label数量"]),
+                        y=alt.Y("数量:Q", title="数量", stack=None),
                         color=alt.Color("类型", title="类型"),
                         tooltip=["日期", "类型", "数量"],
                     )
-                    chart_delay = alt.Chart(df).mark_line(point=True).encode(
-                        x=alt.X("日期", sort=date_labels, title="日期"),
-                        y=alt.Y("平均时间差(分钟):Q", title="平均时间差(分钟)"),
-                        color=alt.value("#ff7f0e"),
-                        tooltip=["日期", "平均时间差(分钟)"],
-                    )
-                    st.altair_chart(
-                        alt.layer(chart_counts, chart_delay).resolve_scale(y="independent"),
-                        use_container_width=True,
-                    )
+                    st.altair_chart(chart_counts, use_container_width=True)
+
+                    if not label_detail_df.empty and "delay_minutes" in label_detail_df.columns:
+                        delay_df = label_detail_df.dropna(subset=["delay_minutes"])
+                        if not delay_df.empty:
+                            chart_delay = alt.Chart(delay_df).mark_bar().encode(
+                                x=alt.X("key", title="Key", sort="-y"),
+                                y=alt.Y("delay_minutes:Q", title="时间差(分钟)"),
+                                tooltip=["key", "delay_minutes"],
+                            )
+                            st.altair_chart(chart_delay, use_container_width=True)
+
+        with col_filters:
+            if label_stats_df is not None and not label_stats_df.empty:
+                final_name = f"{export_filename}.csv" if export_filename else "label_stats.csv"
+                export_df = label_stats_df[["日期", "Attachment数量", "Label数量"]]
+                csv_data = export_df.to_csv(index=False, header=True).encode("utf-8-sig")
+                st.download_button("下载汇总 CSV", data=csv_data, file_name=final_name, mime="text/csv")
+                if label_detail_df is not None and not label_detail_df.empty:
+                    detail_name = f"{export_filename}_detail.csv" if export_filename else "label_stats_detail.csv"
+                    detail_csv = label_detail_df.to_csv(index=False, header=True).encode("utf-8-sig")
+                    st.download_button("下载明细 CSV", data=detail_csv, file_name=detail_name, mime="text/csv")
+            else:
+                st.info("暂无可导出数据")
             
     elif admin_tab == "日志记录":
         col_filters, col_content = st.columns([1, 4])
