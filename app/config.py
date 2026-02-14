@@ -23,7 +23,7 @@ def load_config() -> AppConfig:
     return AppConfig(
         database_path=os.getenv(
             "APP_DATABASE_PATH",
-            "/home/bj17300-049u/work/log_analyze_feedback_mvp/data/app.db",
+            "/home/bj17300-049u/work/log_analyze_feedback_mvp/data/app2.db",
         ),
         attachments_root=os.getenv(
             "APP_ATTACHMENTS_ROOT",

@@ -33,7 +33,8 @@ class DB:
                 user_ip TEXT NOT NULL,
                 attachments TEXT NOT NULL,
                 status TEXT NOT NULL,
-                jira_key TEXT
+                jira_key TEXT,
+                extra_content TEXT
             )
             """
         )

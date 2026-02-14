@@ -346,7 +346,7 @@ def list_feedbacks(filters: Dict[str, Any]) -> Dict[str, Any]:
     offset = (page - 1) * page_size
     rows = db.fetch_all(
         f"""
-        SELECT id, created_at, sentiment, content, user_ip, status, jira_key, attachments
+        SELECT id, created_at, sentiment, content, user_ip, status, jira_key, attachments, extra_content
         FROM feedbacks
         {where_clause}
         ORDER BY created_at DESC
@@ -521,8 +521,8 @@ def update_review_status(feedback_id: int, status: str, note: str) -> Tuple[bool
     if not item:
         return False, "反馈不存在"
     db.execute_query(
-        "UPDATE feedbacks SET status = ?, updated_at = ? WHERE id = ?",
-        (status, now_iso(), feedback_id),
+        "UPDATE feedbacks SET status = ?, extra_content = ?, updated_at = ? WHERE id = ?",
+        (status, json_dumps({"note": note or ""}), now_iso(), feedback_id),
     )
     log_event(
         "job",
@@ -787,7 +787,20 @@ def render_feedback_list(filters: Dict[str, Any]) -> None:
                 index=["pending", "accepted", "rejected", "followup"].index(item["status"]),
                 key=f"status_{item['id']}",
             )
-            note = st.text_input("评审备注", key=f"note_{item['id']}")
+
+            # 添加已有的内容
+            note_key = f"note_{item['id']}"
+            if note_key not in st.session_state:
+                raw_extra = item.get("extra_content") or ""
+                existing_note = ""
+                if raw_extra:
+                    try:
+                        extra_payload = json_loads(raw_extra)
+                        existing_note = str(extra_payload.get("note") or "") if isinstance(extra_payload, dict) else ""
+                    except Exception:
+                        existing_note = ""
+                st.session_state[note_key] = existing_note
+            note = st.text_input("评审备注", key=note_key)
             
             if st.button("更新状态", key=f"update_{item['id']}"):
                 ok_status, message = update_review_status(item["id"], status, note)
@@ -860,7 +873,7 @@ def render_admin() -> None:
     with st.sidebar:
         st.markdown("---")
         log_auto_refresh = st.checkbox("自动刷新", value=True, key="log_auto_refresh")
-        log_refresh_interval = st.selectbox("刷新间隔(秒)", options=[5, 10, 30, 60, 120], index=1, key="log_refresh_interval")
+        log_refresh_interval = st.selectbox("刷新间隔(秒)", options=[5, 10, 30, 60, 120], index=4, key="log_refresh_interval")
         if log_refresh_interval:     
             st_autorefresh(log_refresh_interval * 1000, key="log_autorefresh")
     if admin_tab == "统计信息":
@@ -924,7 +937,7 @@ def render_admin() -> None:
             sentiment = st.selectbox("情感", options=["", "like", "dislike"])
             status = st.selectbox("状态", options=["", "pending", "accepted", "rejected", "followup"])
             keyword = st.text_input("关键词")
-            page_size = st.selectbox("每页条数", options=[10, 20, 50, 100], index=1)
+            page_size = st.selectbox("每页条数", options=[10, 20, 50, 100])
             page = st.number_input("页码", min_value=1, step=1, value=1, key="feedback_page")
 
             filters: Dict[str, Any] = {"page": int(page), "page_size": page_size}
@@ -1119,12 +1132,14 @@ def render_admin() -> None:
                     if not label_detail_df.empty and "delay_minutes" in label_detail_df.columns:
                         delay_df = label_detail_df.dropna(subset=["delay_minutes"])
                         if not delay_df.empty:
+                            st.dataframe(delay_df, use_container_width=True)
                             chart_delay = alt.Chart(delay_df).mark_bar().encode(
                                 x=alt.X("key", title="Key", sort="-y"),
                                 y=alt.Y("delay_minutes:Q", title="时间差(分钟)"),
                                 tooltip=["key", "delay_minutes"],
                             )
                             st.altair_chart(chart_delay, use_container_width=True)
+
 
         with col_filters:
             if label_stats_df is not None and not label_stats_df.empty:
