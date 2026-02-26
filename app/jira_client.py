@@ -73,6 +73,29 @@ class MyJira:
             return None
         return min(created_times)
 
+    def getPriorityHighFirstTime(self, issue):
+        issue = self.mJira.issue(issue.key, expand="changelog")
+
+        histories = getattr(getattr(issue, "changelog", None), "histories", [])
+        applied_times = []
+        print(f'histories:{histories}')
+        for history in histories:
+            for item in history.items:
+                if item.field != "priority":
+                    continue
+                to_string = (getattr(item, "toString", "") or "").lower()
+                to_value = (getattr(item, "to", "") or "").lower()
+                if to_string in {"high", "highest"} or to_value in {"high", "highest"}:
+                    applied_times.append(history.created)
+        if not applied_times:
+            fields = getattr(issue, "fields", None)
+            priority_name = getattr(getattr(fields, "priority", None), "name", None)
+            created_time = getattr(fields, "created", None)
+            if priority_name and priority_name.lower() in {"high", "highest", "p1", "p0"} and created_time:
+                return created_time
+            return None
+        return min(applied_times)
+
     def getAllComponents(self):
         for project in self.mJira.projects():
             components = self.mJira.project_components(project)
@@ -126,15 +149,54 @@ class MyJira:
                 if item.field != "labels":
                     continue
                 to_string = getattr(item, "toString", "") or ""
+                from_string = getattr(item, "fromString", "") or ""
                 to_value = getattr(item, "to", "") or ""
-                if label in to_string or label in str(to_value):
+                from_value = getattr(item, "from", "") or ""
+                if label in to_string and label not in from_string or label in str(to_value) and label not in str(from_value):
                     applied_times.append(history.created)
         if not applied_times:
+            keyword = "AI智能分析"
+            applied_time = self.getAiCommentTime(issue_key, keyword)
+            if applied_time:
+                return applied_time
             return None
         return min(applied_times)
     
+    def getAiCommentTime(self, issue_key, keyword="AI智能分析"):
+        """
+        获取issue中第一条包含指定关键字的评论时间
+        :param issue_key: JIRA issue key
+        :param keyword: 要搜索的关键字，默认为"AI智能分析"
+        :return: 第一条匹配评论的创建时间，如果没有匹配则返回None
+        """
+        issue = self.mJira.issue(issue_key, expand="comments")
+        comments = getattr(getattr(issue, "fields", None), "comment", None)
+        if not comments or not getattr(comments, "comments", None):
+            return None
+        
+        for comment in comments.comments:
+            body = getattr(comment, "body", "") or ""
+            if keyword in body:
+                return getattr(comment, "created", None)
+        return None
+
+    def getAiCommentTimeWithSql(self, sql, keyword="AI智能分析"):
+        """
+        批量获取多个issue中第一条包含指定关键字的评论时间
+        :param sql: JQL查询语句
+        :param keyword: 要搜索的关键字，默认为"AI智能分析"
+        :return: 包含issue key和评论时间的列表
+        """
+        issues = self.search_issues(sql)
+        comment_time = []
+        for issue in issues:
+            applied_time = self.getAiCommentTime(issue.key, keyword)
+            if applied_time:
+                comment_time.append({"key": issue.key, "ai_comment_time": applied_time})
+        return comment_time
+    
     def getLabelAppliedTimeWithSql(self, sql, label):
-        issues = self.mJira.search_issues(sql)
+        issues = self.search_issues(sql)
         label_time = []
 
         for issue in issues:
@@ -144,10 +206,19 @@ class MyJira:
 
         return label_time
 
-    def getEarliestAttachmentTimeWithSql(self, sql, patern=r".*\.(log|txt|zip|rar|7z)$"):
-        issues = self.mJira.search_issues(sql)
+    def getPriorityHighFirstTimeWithSql(self, sql):
+        issues = self.search_issues(sql)
+        priority_time = []
+        for issue in issues:
+            applied_time = self.getPriorityHighFirstTime(issue)
+            if applied_time:
+                priority_time.append({"key":issue.key, "priority_high_time":applied_time})
+        return priority_time
+
+    def getEarliestAttachmentTimeWithSql(self, sql, patern=r".*\.(log|txt|zip|rar|7z|xz|gz|tar)$"):
+        issues = self.search_issues(sql)
         attachment_time = []
-        # print(f"issues:{issues}")
+        print(f"len(issues):{len(issues)}")
         for issue in issues:
             earliest_time = self.getEarliestAttachmentTime(issue, patern)
             if earliest_time:
@@ -161,8 +232,14 @@ class MyJira:
 def main():
     my_jira = MyJira("https://jira.amlogic.com", "lingzhi.bi", "Qwer!23456")
     # sql = "assignee = \"lingzhi.bi\" AND labels = LN_TAG_2025_AI"
-    sql = "project in (\"OTT projects\") AND status not in (Closed, Done, Resolved, Verified) AND priority in (High, Highest) AND type in (Bug, Sub-bug) AND created >= \"2026-02-10\" AND created <= \"2026-02-12\""
-    label_time = my_jira.getEarliestAttachmentTimeWithSql(sql)
-    print(label_time)
+    # sql = "project in (\"OTT projects\") AND status not in (Closed, Done, Resolved, Verified) AND priority in (High, Highest) AND type in (Bug, Sub-bug) OR labels = SE-LN-LOG-2026"
+    # sql = "project in (\"OTT projects\") AND status not in (Closed, Done, Resolved, Verified) AND priority in (High, Highest) AND type in (Bug, Sub-bug) AND created >= \"2026-02-01\""
+    sql = "key = OTT-92107"
+    priority_high_time = my_jira.getEarliestAttachmentTimeWithSql(sql)
+    print(f"len(priority_high_time):{len(priority_high_time)}")
+    print(priority_high_time)
+    label_applied_time = my_jira.getLabelAppliedTimeWithSql(sql, "SE-LN-LOG-2026")
+    print(f"len(label_applied_time):{len(label_applied_time)}")
+    print(label_applied_time)
 if __name__ == "__main__":
     main()

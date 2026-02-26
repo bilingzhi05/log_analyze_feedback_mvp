@@ -5,11 +5,13 @@ import base64
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import parse_qs
 
 import streamlit as st
 from streamlit_quill import st_quill
 from streamlit_autorefresh import st_autorefresh
 from bs4 import BeautifulSoup
+from streamlit.runtime.scriptrunner_utils.script_run_context import get_script_run_ctx
 
 from app.auth import (
     create_captcha,
@@ -247,7 +249,7 @@ def render_frontend() -> None:
     if "form_id" not in st.session_state:
         st.session_state.form_id = 0
     
-    st.header("建议收集系统")
+    st.header("LOG 分析反馈收集站")
     
     # Check for success state
     if st.session_state.get("submission_success"):
@@ -258,13 +260,11 @@ def render_frontend() -> None:
             st.session_state.form_id += 1
             st.rerun()
         return
-
-    st.info("提交即表示同意采集 IP 与附件用于反馈分析与处理。")
     
     form_key_suffix = st.session_state.form_id
 
     with st.form(key=f"feedback_form_{form_key_suffix}"):
-        sentiment = st.radio("喜欢/不喜欢", options=["like", "dislike"], format_func=lambda v: "喜欢👍" if v == "like" else "不喜欢👎", key=f"fe_sentiment_{form_key_suffix}", horizontal=True)
+        sentiment = st.radio("请对当前的 LOG 分析内容进行评价：喜欢/不喜欢", options=["like", "dislike"], format_func=lambda v: "喜欢👍" if v == "like" else "不喜欢👎", key=f"fe_sentiment_{form_key_suffix}", horizontal=True)
         
         # 使用 Quill 编辑器替换原生 Text Area 以支持图片粘贴
         # content = st.text_area("建议内容", max_chars=2000, height=200, key=f"fe_content_{form_key_suffix}")
@@ -275,7 +275,6 @@ def render_frontend() -> None:
             toolbar=[
                 ["bold", "italic", "underline"],
                 [{"list": "ordered"}, {"list": "bullet"}],
-                ["link", "image"],
                 ["clean"],
             ],
             key=f"fe_content_{form_key_suffix}"
@@ -287,8 +286,7 @@ def render_frontend() -> None:
             type=["png", "jpg", "jpeg", "webp", "pdf", "docx", "txt", "log", "zip", "rar"],
             key=f"fe_files_{form_key_suffix}"
         )
-        
-        st.text_input("用户 IP", value="系统自动采集", disabled=True)
+
         submitted = st.form_submit_button("提交")
 
     if submitted:
@@ -610,7 +608,7 @@ def download_export(path: str, params: Dict[str, Any]) -> Tuple[bool, bytes, str
             content = json.dumps(rows, ensure_ascii=False, indent=2).encode("utf-8")
             return True, content, "feedbacks.json"
         csv_buffer = io.StringIO()
-        headers = ["id", "created_at", "sentiment", "content", "user_ip", "status", "jira_key"]
+        headers = ["id", "created_at", "sentiment", "content", "user_ip", "status", "jira_key", "extra_content", "note"]
         csv_buffer.write(",".join(headers) + "\n")
         for row in rows:
             # 对内容处理，移除图片
@@ -623,7 +621,15 @@ def download_export(path: str, params: Dict[str, Any]) -> Tuple[bool, bytes, str
             except Exception:
                 content_text = content_html
             
-            # 写入csv文件
+            extra_content = str(row.get("extra_content", ""))
+            note_text = ""
+            if extra_content:
+                try:
+                    extra_payload = json_loads(extra_content)
+                    if isinstance(extra_payload, dict):
+                        note_text = str(extra_payload.get("note", ""))
+                except Exception:
+                    note_text = ""
             csv_buffer.write(
                 ",".join(
                     [
@@ -634,6 +640,8 @@ def download_export(path: str, params: Dict[str, Any]) -> Tuple[bool, bytes, str
                         str(row.get("user_ip", "")),
                         str(row.get("status", "")),
                         str(row.get("jira_key", "")),
+                        extra_content.replace("\n", " "),
+                        note_text.replace("\n", " "),
                     ]
                 )
                 + "\n"
@@ -674,7 +682,6 @@ def build_time_range(option: str) -> Tuple[Optional[str], Optional[str]]:
     异常：无显式异常。
     """
     today = datetime.now().date()
-    log(f"构建时间范围: today={today} today.isoformat={today.isoformat()}")
     if option == "今天":
         return today.isoformat(), today.isoformat()
     if option == "近7天":
@@ -725,12 +732,12 @@ def render_feedback_list(filters: Dict[str, Any]) -> None:
             else:
                 st.write("Jira：-")
 
-            if st.button("删除反馈", key=f"delete_{item['id']}"):
-                db.execute_query("DELETE FROM feedbacks WHERE id = ?", (item['id'],))
-                log_event("job", "删除反馈", {"feedback_id": item['id']})
-                st.success("反馈已删除")
-                st.rerun()
-                return
+            # if st.button("删除反馈", key=f"delete_{item['id']}"):
+            #     db.execute_query("DELETE FROM feedbacks WHERE id = ?", (item['id'],))
+            #     log_event("job", "删除反馈", {"feedback_id": item['id']})
+            #     st.success("反馈已删除")
+            #     st.rerun()
+            #     return
             
             if not item.get("jira_key"):
                 jira_key_input = st.text_input("Jira 编号", key=f"jira_key_{item['id']}")
@@ -837,43 +844,47 @@ def render_admin() -> None:
     """
     st.header("后台管理")
     logged_in = require_admin_session()
-    # if not logged_in:
-    #     st.subheader("管理员登录")
-    #     username = st.text_input("账号")
-    #     password = st.text_input("密码", type="password")
-    #     captcha_id = st.session_state.get("captcha_id", "")
-    #     captcha_text = st.session_state.get("captcha_text", "")
-    #     captcha_code = ""
-    #     if captcha_text:
-    #         st.warning(f"验证码：{captcha_text}")
-    #         captcha_code = st.text_input("验证码")
-    #     if st.button("登录"):
-    #         ok, message, data = login_admin(username, password, captcha_id, captcha_code)
-    #         if ok:
-    #             st.success(message)
-    #             st.session_state.pop("captcha_id", None)
-    #             st.session_state.pop("captcha_text", None)
-    #             st.rerun()
-    #         else:
-    #             if data.get("need_captcha"):
-    #                 st.session_state.captcha_id = data.get("captcha_id", "")
-    #                 st.session_state.captcha_text = data.get("captcha_text", "")
-    #                 st.warning("请填写验证码后重试")
-    #             else:
-    #                 st.error(message)
-    #     return
+    if not logged_in:
+        st.subheader("管理员登录")
+        username = st.text_input("账号")
+        password = st.text_input("密码", type="password")
+        captcha_id = st.session_state.get("captcha_id", "")
+        captcha_text = st.session_state.get("captcha_text", "")
+        captcha_code = ""
+        if captcha_text:
+            st.warning(f"验证码：{captcha_text}")
+            captcha_code = st.text_input("验证码")
+        if st.button("登录"):
+            ok, message, data = login_admin(username, password, captcha_id, captcha_code)
+            if ok:
+                st.success(message)
+                st.session_state.pop("captcha_id", None)
+                st.session_state.pop("captcha_text", None)
+                st.rerun()
+            else:
+                if data.get("need_captcha"):
+                    st.session_state.captcha_id = data.get("captcha_id", "")
+                    st.session_state.captcha_text = data.get("captcha_text", "")
+                    st.warning("请填写验证码后重试")
+                else:
+                    st.error(message)
+        return
 
-    # if st.button("退出登录"):
-    #     st.session_state.admin_logged_in = False
-    #     st.session_state.pop("admin_expires_at", None)
-    #     st.rerun()
+    if st.button("退出登录"):
+        st.session_state.admin_logged_in = False
+        st.session_state.pop("admin_expires_at", None)
+        st.rerun()
+    if st.button("强制刷新"):
+        st.rerun()
 
-    admin_tab = st.sidebar.radio("管理菜单", ["统计信息", "反馈列表","标签统计", "日志记录"])
+    admin_tab = st.sidebar.radio("管理菜单", ["统计信息", "反馈列表","标签统计", "日志记录"], key="admin_tab")
    
     with st.sidebar:
         st.markdown("---")
-        log_auto_refresh = st.checkbox("自动刷新", value=True, key="log_auto_refresh")
-        log_refresh_interval = st.selectbox("刷新间隔(秒)", options=[5, 10, 30, 60, 120], index=4, key="log_refresh_interval")
+        log_refresh_interval = None
+        log_auto_refresh = st.checkbox("自动刷新", value=False, key="log_auto_refresh")
+        if log_auto_refresh:
+            log_refresh_interval = st.selectbox("刷新间隔(秒)", options=[5, 10, 30, 60, 120, 600], index=5, key="log_refresh_interval")
         if log_refresh_interval:     
             st_autorefresh(log_refresh_interval * 1000, key="log_autorefresh")
     if admin_tab == "统计信息":
@@ -922,22 +933,31 @@ def render_admin() -> None:
         
         with col_filters:
             st.subheader("过滤条件")
-            range_option = st.selectbox("时间范围", options=["全部", "今天", "近7天", "本月", "本年", "自定义"])
+            range_option = st.selectbox(
+                "时间范围",
+                options=["全部", "今天", "近7天", "本月", "本年", "自定义"],
+                key="feedback_range_option",
+            )
             from_date = None
             to_date = None
             if range_option == "自定义":
-                from_date = st.date_input("开始日期")
-                to_date = st.date_input("结束日期")
+                from_date = st.date_input("开始日期", key="feedback_from_date")
+                to_date = st.date_input("结束日期", key="feedback_to_date")
             else:
                 from_value, to_value = build_time_range(range_option)
                 if from_value:
                     from_date = datetime.fromisoformat(from_value).date()
                 if to_value:
                     to_date = datetime.fromisoformat(to_value).date()
-            sentiment = st.selectbox("情感", options=["", "like", "dislike"])
-            status = st.selectbox("状态", options=["", "pending", "accepted", "rejected", "followup"])
-            keyword = st.text_input("关键词")
-            page_size = st.selectbox("每页条数", options=[10, 20, 50, 100])
+            log(f"构建时间范围: from_date={from_date} to_date={to_date}")
+            sentiment = st.selectbox("情感", options=["", "like", "dislike"], key="feedback_sentiment")
+            status = st.selectbox(
+                "状态",
+                options=["", "pending", "accepted", "rejected", "followup"],
+                key="feedback_status",
+            )
+            keyword = st.text_input("关键词", key="feedback_keyword")
+            page_size = st.selectbox("每页条数", options=[10, 20, 50, 100], key="feedback_page_size")
             page = st.number_input("页码", min_value=1, step=1, value=1, key="feedback_page")
 
             filters: Dict[str, Any] = {"page": int(page), "page_size": page_size}
@@ -954,11 +974,14 @@ def render_admin() -> None:
 
             export_filename = st.text_input("导出文件名 (可选，不含扩展名)", key="log_export_name")
             col_export_csv, col_export_json = st.columns(2)
+            time_range = f"{from_date}-{to_date}"
             with col_export_csv:
                 if st.button("导出 CSV"):
                     ok_export, content, filename = download_export("/api/feedbacks/export", {**filters, "format": "csv"})
                     if ok_export:
                         final_name = f"{export_filename}.csv" if export_filename else filename
+                        final_name = final_name.split(".")[0]
+                        final_name = f"{final_name}-{time_range}.csv"
                         st.download_button("下载 CSV", data=content, file_name=final_name, mime="text/csv")
                     else:
                         st.error("导出失败")
@@ -967,6 +990,8 @@ def render_admin() -> None:
                     ok_export, content, filename = download_export("/api/feedbacks/export", {**filters, "format": "json"})
                     if ok_export:
                         final_name = f"{export_filename}.json" if export_filename else filename
+                        final_name = final_name.split(".")[0]
+                        final_name = f"{final_name}-{time_range}.json"
                         st.download_button("下载 JSON", data=content, file_name=final_name, mime="application/json")
                     else:
                         st.error("导出失败")
@@ -984,7 +1009,7 @@ def render_admin() -> None:
         label_detail_df = None
         with col_filters:
             st.subheader("过滤条件")
-            range_option = st.selectbox("时间范围", options=["全部", "今天", "近7天", "本月", "本年", "自定义"], key="label_range_option")
+            range_option = st.selectbox("Jira 创建时间范围", options=["全部", "今天", "近7天", "本月", "本年", "自定义"], index=2, key="label_range_option")
 
             if range_option == "自定义":
                 from_date = st.date_input("开始日期", key="label_from_date")
@@ -996,7 +1021,7 @@ def render_admin() -> None:
                 if to_value:
                     to_date = datetime.fromisoformat(to_value).date()
             label_name = st.text_input("标签", value="SE-LN-LOG-2026", key="label_name")
-            created_jql = st.text_area("JQL_Filter", value="project in (\"OTT projects\") AND status not in (Closed, Done, Resolved, Verified) AND priority in (High, Highest) AND type in (Bug, Sub-bug)", height=120,key="created_jql")
+            created_jql = st.text_area("JQL_Filter", value="(project in (\"OTT projects\") AND priority in (High, Highest) AND type in (Bug, Sub-bug) AND (status not in (Closed, Done, Resolved, Verified) OR labels = SE-LN-LOG-2026))", height=120, key="created_jql")
             st.subheader("导出")
             export_filename = st.text_input("导出文件名 (可选，不含扩展名)", key="label_export_name")
         
@@ -1004,10 +1029,12 @@ def render_admin() -> None:
             if not label_name.strip():
                 st.warning("请输入标签")
             else:
-                if from_date and from_date >= datetime.fromisoformat("2026-02-01").date():
+                # if from_date and from_date >= datetime.fromisoformat("2026-02-01").date():
+                #     created_jql += f' AND created >= \"{from_date.isoformat()}\"'
+                # else:
+                #     created_jql += f' AND created >= \"2026-02-01\"'
+                if from_date:
                     created_jql += f' AND created >= \"{from_date.isoformat()}\"'
-                else:
-                    created_jql += f' AND created >= \"2026-02-01\"'
                 if to_date:
                     created_jql += f' AND created <= \"{to_date.isoformat()}\"'
                 log(f"created_jql:{created_jql}")
@@ -1035,37 +1062,50 @@ def render_admin() -> None:
                 add_attachemt_time_items_count = len(add_attachemt_time_items)
                 log(f"add_attachemt_time_items_count:{add_attachemt_time_items_count}")
                 created_attachment_date_counts: Dict[Any, int] = {}
-                created_time_by_key: Dict[str, datetime] = {}
+                attachemt_time_by_key: Dict[str, datetime] = {}
                 for item in add_attachemt_time_items:
-                    created_dt = parse_datetime(item.get("attachment_time"))
-                    if not created_dt:
+                    attachemt_dt = parse_datetime(item.get("attachment_time"))
+                    if not attachemt_dt:
                         continue
                     issue_key = item.get("key")
                     if issue_key:
-                        created_time_by_key[issue_key] = created_dt
-                    created_date = created_dt.date()
+                        attachemt_time_by_key[issue_key] = attachemt_dt
+                    created_date = attachemt_dt.date()
                     if from_date and created_date < from_date:
                         continue
                     if to_date and created_date > to_date:
                         continue
                     created_attachment_date_counts[created_date] = created_attachment_date_counts.get(created_date, 0) + 1
+
+                priority_time_items = my_jira.getPriorityHighFirstTimeWithSql(created_jql)
+                priority_time_items_count = len(priority_time_items)
+                log(f"priority_time_items_count:{priority_time_items_count}")
+                priority_time_by_key: Dict[str, datetime] = {}
+                for item in priority_time_items:
+                    priority_dt = parse_datetime(item.get("priority_high_time"))
+                    if not priority_dt:
+                        continue
+                    issue_key = item.get("key")
+                    if issue_key:
+                        priority_time_by_key[issue_key] = priority_dt
+
                 log(f"created_attachment_date_counts:{created_attachment_date_counts}")
                 log(f"created_label_date_counts:{created_label_date_counts}")
 
                 delay_minutes_by_date: Dict[Any, List[float]] = {}
-                for issue_key, created_dt in created_time_by_key.items():
+                for issue_key, attachemt_dt in attachemt_time_by_key.items():
                     label_dt = label_time_by_key.get(issue_key)
                     if not label_dt:
                         continue
-                    delay_minutes = (label_dt - created_dt).total_seconds() / 60.0
-                    if delay_minutes < 0:
+                    attachemt_delay_minutes = (label_dt - attachemt_dt).total_seconds() / 60.0
+                    if attachemt_delay_minutes < 0:
                         continue
-                    created_date = created_dt.date()
+                    created_date = attachemt_dt.date()
                     if from_date and created_date < from_date:
                         continue
                     if to_date and created_date > to_date:
                         continue
-                    delay_minutes_by_date.setdefault(created_date, []).append(delay_minutes)
+                    delay_minutes_by_date.setdefault(created_date, []).append(attachemt_delay_minutes)
 
                 import pandas as pd
                 import altair as alt
@@ -1091,18 +1131,28 @@ def render_admin() -> None:
                     df = pd.DataFrame(rows)
                     label_stats_df = df
                     detail_rows = []
-                    for issue_key in sorted(set(created_time_by_key) | set(label_time_by_key)):
-                        created_dt = created_time_by_key.get(issue_key)
+                    for issue_key in sorted(set(attachemt_time_by_key) | set(label_time_by_key) | set(priority_time_by_key)):
+                        attachemt_dt = attachemt_time_by_key.get(issue_key)
                         label_dt = label_time_by_key.get(issue_key)
-                        delay_minutes = None
-                        if created_dt and label_dt:
-                            delay_minutes = round((label_dt - created_dt).total_seconds() / 60.0, 2)
+                        priority_dt = priority_time_by_key.get(issue_key)
+                        attachemt_delay_minutes = None
+                        priority_delay_minutes = None
+                        if attachemt_dt and label_dt:
+                            attachemt_delay_minutes = round((label_dt - attachemt_dt).total_seconds() / 60.0, 2)
+                            if attachemt_delay_minutes < 0:
+                                attachemt_delay_minutes = None
+                        if priority_dt and label_dt:
+                            priority_delay_minutes = round((label_dt - priority_dt).total_seconds() / 60.0, 2)
+                            # if priority_delay_minutes < 0:
+                            #     priority_delay_minutes = None
                         detail_rows.append(
                             {
                                 "key": issue_key,
-                                "created_time": created_dt.isoformat() if created_dt else "",
+                                "attachment_time": attachemt_dt.isoformat() if attachemt_dt else "",
                                 "label_time": label_dt.isoformat() if label_dt else "",
-                                "delay_minutes": delay_minutes,
+                                "priority_time": priority_dt.isoformat() if priority_dt else "",
+                                "attachemt_delay_minutes": attachemt_delay_minutes,
+                                "priority_delay_minutes": priority_delay_minutes,
                             }
                         )
                     label_detail_df = pd.DataFrame(detail_rows)
@@ -1115,12 +1165,11 @@ def render_admin() -> None:
                         var_name="类型",
                         value_name="数量",
                     )
-                    chart_counts = alt.Chart(counts_df).mark_bar(size=24).encode(
+                    chart_counts = alt.Chart(counts_df).mark_bar().encode(
                         x=alt.X(
                             "日期", 
                             sort=date_labels, 
                             title="日期", 
-                            scale=alt.Scale(paddingInner=0.0, paddingOuter=0.01),
                         ),
                         xOffset=alt.XOffset("类型", sort=["Attachment数量", "Label数量"]),
                         y=alt.Y("数量:Q", title="数量", stack=None),
@@ -1129,26 +1178,65 @@ def render_admin() -> None:
                     )
                     st.altair_chart(chart_counts, use_container_width=True)
 
-                    if not label_detail_df.empty and "delay_minutes" in label_detail_df.columns:
-                        delay_df = label_detail_df.dropna(subset=["delay_minutes"])
+                    if not label_detail_df.empty and "attachemt_delay_minutes" in label_detail_df.columns:
+                        delay_df = label_detail_df.dropna(subset=["attachemt_delay_minutes", "priority_delay_minutes"], how="all")
                         if not delay_df.empty:
                             st.dataframe(delay_df, use_container_width=True)
-                            chart_delay = alt.Chart(delay_df).mark_bar().encode(
-                                x=alt.X("key", title="Key", sort="-y"),
-                                y=alt.Y("delay_minutes:Q", title="时间差(分钟)"),
-                                tooltip=["key", "delay_minutes"],
+                            delay_long = delay_df.melt(
+                                id_vars=["key"],
+                                value_vars=["attachemt_delay_minutes", "priority_delay_minutes"],
+                                var_name="类型",
+                                value_name="耗时",
                             )
-                            st.altair_chart(chart_delay, use_container_width=True)
+                            delay_long = delay_long.dropna(subset=["耗时"])
+                            if not delay_long.empty:
+                                delay_long["类型"] = delay_long["类型"].replace(
+                                    {
+                                        "attachemt_delay_minutes": "附件->标签",
+                                        "priority_delay_minutes": "优先级->标签",
+                                    }
+                                )
+                                priority_order = (
+                                    delay_df.dropna(subset=["priority_delay_minutes"])
+                                    .sort_values("priority_delay_minutes", ascending=False)["key"]
+                                    .tolist()
+                                )
+                                if not priority_order:
+                                    priority_order = sorted(delay_df["key"].unique().tolist())
+                                chart_delay = alt.Chart(delay_long).mark_bar(opacity=0.5).encode(
+                                    x=alt.X("key", title="Key", sort=priority_order),
+                                    y=alt.Y(
+                                        "耗时:Q",
+                                        title="时间差(分钟)",
+                                        stack=None,
+                                        scale=alt.Scale(type="symlog", constant=1),
+                                    ),
+                                    color=alt.Color("类型", title="类型"),
+                                    tooltip=["key", "类型", "耗时"],
+                                )
+                                threshold_line = alt.Chart(
+                                    pd.DataFrame({"y": [120]}),
+                                ).mark_rule(color="#FF0000", strokeDash=[6, 4]).encode(
+                                    y="y:Q"
+                                )
+                                st.caption("说明：附件耗时为 None 表示没有附件， 红色虚线代表120分钟。")
+                                st.altair_chart(chart_delay + threshold_line, use_container_width=True)
 
 
         with col_filters:
+            time_range = f"{from_date}-{to_date}"
             if label_stats_df is not None and not label_stats_df.empty:
                 final_name = f"{export_filename}.csv" if export_filename else "label_stats.csv"
                 export_df = label_stats_df[["日期", "Attachment数量", "Label数量"]]
                 csv_data = export_df.to_csv(index=False, header=True).encode("utf-8-sig")
+                final_name = final_name.split(".")[0]
+                final_name = f"{final_name}-{time_range}.csv"
                 st.download_button("下载汇总 CSV", data=csv_data, file_name=final_name, mime="text/csv")
+                
                 if label_detail_df is not None and not label_detail_df.empty:
                     detail_name = f"{export_filename}_detail.csv" if export_filename else "label_stats_detail.csv"
+                    detail_name = detail_name.split(".")[0]
+                    detail_name = f"{detail_name}-{time_range}.csv"
                     detail_csv = label_detail_df.to_csv(index=False, header=True).encode("utf-8-sig")
                     st.download_button("下载明细 CSV", data=detail_csv, file_name=detail_name, mime="text/csv")
             else:
@@ -1180,7 +1268,7 @@ def render_admin() -> None:
                 if st.button("导出日志 CSV"):
                     ok_export, content, filename = download_export("/api/logs", {**log_filters, "format": "csv"})
                     if ok_export:
-                        final_name = f"{export_filename}.csv" if export_filename else filename
+                        final_name = f"{export_filename}-{log_from}-{log_to}.csv" if export_filename else filename
                         st.download_button("下载日志 CSV", data=content, file_name=final_name, mime="text/csv")
                     else:
                         st.error("导出失败")
@@ -1204,15 +1292,34 @@ def render_app() -> None:
     异常：无显式异常。
     """
     st.set_page_config(page_title="建议收集系统", layout="wide")
-    page = st.sidebar.selectbox("页面", options=["前台提交", "后台管理"])
-    if page == "前台提交":
-        render_frontend()
-    else:
+    page = get_requested_page()
+    if page == "admin":
         render_admin()
+    else:
+        render_frontend()
+
+
+def get_requested_page() -> str:
+    page = None
+    try:
+        if hasattr(st, "query_params"):
+            page = st.query_params.get("page")
+            if isinstance(page, list):
+                page = page[0] if page else None
+    except Exception:
+        page = None
+    if not page:
+        ctx = get_script_run_ctx(suppress_warning=True)
+        if ctx and ctx.query_string:
+            params = parse_qs(ctx.query_string)
+            values = params.get("page")
+            if values:
+                page = values[0]
+    return "admin" if str(page).lower() == "admin" else "feedback"
 
 
 if __name__ == "__main__":
     render_app()
 
-# cd /home/bj17300-049u/work/log_analyze_feedback_mvp && source /home/bj17300-049u/work/log_analyze_feedback_mvp/311venv/bin/activate && streamlit run streamlit_app.py --server.port 8501 --server.headless true
+# cd /home/amlogic/FAE/AutoLog/lingzhi.bi/log_analyze_feedback_mvp && source /home/amlogic/FAE/AutoLog/lingzhi.bi/log_analyze_feedback_mvp/310venv/bin/activate && nohup streamlit run streamlit_app.py --server.port 8053 --server.headless true &
 # 

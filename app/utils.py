@@ -40,10 +40,15 @@ def parse_datetime(value: Optional[str]) -> Optional[datetime]:
     """
     if not value:
         return None
+    normalized = value.strip()
+    if normalized.endswith("Z"):
+        normalized = f"{normalized[:-1]}+00:00"
+    if re.search(r"[+-]\d{4}$", normalized):
+        normalized = f"{normalized[:-5]}{normalized[-5:-2]}:{normalized[-2:]}"
     try:
-        return datetime.fromisoformat(value)
+        return datetime.fromisoformat(normalized)
     except ValueError:
-        return datetime.fromisoformat(f"{value}T00:00:00+00:00")
+        return datetime.fromisoformat(f"{normalized}T00:00:00+00:00")
 
 
 def validate_sentiment(sentiment: str) -> None:

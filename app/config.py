@@ -23,11 +23,11 @@ def load_config() -> AppConfig:
     return AppConfig(
         database_path=os.getenv(
             "APP_DATABASE_PATH",
-            "/home/bj17300-049u/work/log_analyze_feedback_mvp/data/app2.db",
+            "data/app2.db",
         ),
         attachments_root=os.getenv(
             "APP_ATTACHMENTS_ROOT",
-            "/home/bj17300-049u/work/log_analyze_feedback_mvp/data/attachments",
+            "data/attachments",
         ),
         admin_username=os.getenv("APP_ADMIN_USERNAME", "admin"),
         admin_password=os.getenv("APP_ADMIN_PASSWORD", "admin123"),
