@@ -1179,8 +1179,9 @@ def render_admin() -> None:
                     st.altair_chart(chart_counts, use_container_width=True)
 
                     if not label_detail_df.empty and "attachemt_delay_minutes" in label_detail_df.columns:
-                        delay_df = label_detail_df.dropna(subset=["attachemt_delay_minutes", "priority_delay_minutes"], how="all")
+                        delay_df = label_detail_df.copy()
                         if not delay_df.empty:
+                            st.subheader("附件&标签&优先级的总表")
                             st.dataframe(delay_df, use_container_width=True)
                             delay_long = delay_df.melt(
                                 id_vars=["key"],
@@ -1215,12 +1216,26 @@ def render_admin() -> None:
                                     tooltip=["key", "类型", "耗时"],
                                 )
                                 threshold_line = alt.Chart(
-                                    pd.DataFrame({"y": [120]}),
+                                    pd.DataFrame({"y": [240]}),
                                 ).mark_rule(color="#FF0000", strokeDash=[6, 4]).encode(
                                     y="y:Q"
                                 )
-                                st.caption("说明：附件耗时为 None 表示没有附件， 红色虚线代表120分钟。")
+                                st.caption("说明：attachment_time/attachmentdelay_minutes 为 None 表示没有附件，priority_delay_minutes 为 None表示没有打label， 红色虚线代表240分钟，只显示有附件或优先级的Jira。")
                                 st.altair_chart(chart_delay + threshold_line, use_container_width=True)
+ 
+                        if not label_detail_df.empty:
+                            missing_label_df = label_detail_df[(label_detail_df["attachment_time"] != "") & (label_detail_df["priority_time"] != "") & (label_detail_df["label_time"] == "")]
+                            if not missing_label_df.empty:
+                                st.subheader("没有打标签的Jira")
+                                st.dataframe(missing_label_df, use_container_width=True)
+                            else:
+                                st.info("所有Jira都打了标签")
+                            long_priority_df = label_detail_df[label_detail_df["priority_delay_minutes"].notna() & (label_detail_df["priority_delay_minutes"] > 240)]
+                            if not long_priority_df.empty:
+                                st.subheader("超过240分钟后才打标签的Jira")
+                                st.dataframe(long_priority_df, use_container_width=True)
+                            else:
+                                st.info("没有超过240分钟后才打标签的Jira")
 
 
         with col_filters:
