@@ -11,6 +11,13 @@ class AppConfig:
     jira_server: str
     jira_username: str
     jira_password: str
+    mysql_host: str
+    mysql_port: int
+    mysql_user: str
+    mysql_password: str
+    mysql_database: str
+    mysql_table: str
+    mysql_analysis_table: str
 
 
 def load_config() -> AppConfig:
@@ -34,5 +41,12 @@ def load_config() -> AppConfig:
         jira_server=os.getenv("JIRA_BASE_URL", "https://jira.amlogic.com").rstrip("/"),
         jira_username=os.getenv("JIRA_USERNAME", "lingzhi.bi"),
         jira_password=os.getenv("JIRA_PASSWORD", "Qwer!23456"),
+        mysql_host=os.getenv("MYSQL_HOST", "10.18.11.98"),
+        mysql_port=int(os.getenv("MYSQL_PORT", "8973")),
+        mysql_user=os.getenv("MYSQL_USER", "root"),
+        mysql_password=os.getenv("MYSQL_PASSWORD", "abc.1234567890"),
+        mysql_database=os.getenv("MYSQL_DATABASE", "5000agent_feedback"),
+        mysql_table=os.getenv("MYSQL_TABLE", "jira_label_metrics"),
+        mysql_analysis_table=os.getenv("MYSQL_ANALYSIS_TABLE", "analysis_runs"),
         # my_jira = MyJira("https://jira.amlogic.com", "lingzhi.bi", "Qwer!23456")
     )

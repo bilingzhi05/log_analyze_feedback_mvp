@@ -23,6 +23,8 @@ from app.auth import (
 from app.config import load_config
 from app.db import DB
 from app.jira_client import MyJira
+from catch_jira_data_to_mysql_app import run_once as run_jira_sync
+from app.mysql_client import MySQLClient
 from app.utils import (
     build_attachment_dir,
     ensure_directory,
@@ -42,6 +44,14 @@ from app.logger import log
 config = load_config()
 db = DB(config.database_path)
 my_jira = MyJira(config.jira_server, config.jira_username, config.jira_password)
+mysql_client = MySQLClient(
+    host=config.mysql_host,
+    port=config.mysql_port,
+    user=config.mysql_user,
+    password=config.mysql_password,
+    database=config.mysql_database,
+    table=config.mysql_table,
+)
 ensure_directory(config.attachments_root)
 
 
@@ -684,6 +694,9 @@ def build_time_range(option: str) -> Tuple[Optional[str], Optional[str]]:
     today = datetime.now().date()
     if option == "今天":
         return today.isoformat(), today.isoformat()
+    if option == "本周":
+        start = today - timedelta(days=today.weekday())
+        return start.isoformat(), today.isoformat()
     if option == "近7天":
         start = today - timedelta(days=6)
         return start.isoformat(), today.isoformat()
@@ -869,15 +882,22 @@ def render_admin() -> None:
                 else:
                     st.error(message)
         return
+    
+    admin_tab = st.sidebar.radio("管理菜单", ["统计信息", "反馈列表","标签统计", "日志记录", "5000agent"], key="admin_tab")
 
     if st.button("退出登录"):
         st.session_state.admin_logged_in = False
         st.session_state.pop("admin_expires_at", None)
         st.rerun()
     if st.button("强制刷新"):
-        st.rerun()
-
-    admin_tab = st.sidebar.radio("管理菜单", ["统计信息", "反馈列表","标签统计", "日志记录"], key="admin_tab")
+        if admin_tab == "标签统计":
+            try:
+                run_jira_sync()
+                st.success("已触发 Jira 数据同步")
+            except Exception as exc:
+                st.error(str(exc))
+        else:
+            st.rerun()
    
     with st.sidebar:
         st.markdown("---")
@@ -1007,9 +1027,10 @@ def render_admin() -> None:
         created_jql = ""
         label_stats_df = None
         label_detail_df = None
+        threshold_minutes = None
         with col_filters:
             st.subheader("过滤条件")
-            range_option = st.selectbox("Jira 创建时间范围", options=["全部", "今天", "近7天", "本月", "本年", "自定义"], index=2, key="label_range_option")
+            range_option = st.selectbox("给Jira打Label的时间范围", options=["全部", "今天", "本周", "近7天", "本月", "本年", "自定义"], index=2, key="label_range_option")
 
             if range_option == "自定义":
                 from_date = st.date_input("开始日期", key="label_from_date")
@@ -1020,131 +1041,94 @@ def render_admin() -> None:
                     from_date = datetime.fromisoformat(from_value).date()
                 if to_value:
                     to_date = datetime.fromisoformat(to_value).date()
+            threshold_minutes = st.number_input("超时阈值(分钟)", min_value=1, value=240, step=10, key="label_threshold_minutes")
             label_name = st.text_input("标签", value="SE-LN-LOG-2026", key="label_name")
             created_jql = st.text_area("JQL_Filter", value="(project in (\"OTT projects\") AND priority in (High, Highest) AND type in (Bug, Sub-bug) AND (status not in (Closed, Done, Resolved, Verified) OR labels = SE-LN-LOG-2026))", height=120, key="created_jql")
             st.subheader("导出")
             export_filename = st.text_input("导出文件名 (可选，不含扩展名)", key="label_export_name")
         
         with col_content:
-            if not label_name.strip():
-                st.warning("请输入标签")
+            if not config.mysql_database or not config.mysql_table:
+                st.warning("请配置 MYSQL_DATABASE 和 MYSQL_TABLE")
             else:
-                # if from_date and from_date >= datetime.fromisoformat("2026-02-01").date():
-                #     created_jql += f' AND created >= \"{from_date.isoformat()}\"'
-                # else:
-                #     created_jql += f' AND created >= \"2026-02-01\"'
-                if from_date:
-                    created_jql += f' AND created >= \"{from_date.isoformat()}\"'
-                if to_date:
-                    created_jql += f' AND created <= \"{to_date.isoformat()}\"'
-                log(f"created_jql:{created_jql}")
-                # 解析时间计算
-                add_labels_time_items = my_jira.getLabelAppliedTimeWithSql(created_jql, label_name)
-                add_labels_time_items_count = len(add_labels_time_items)
-                log(f"add_labels_time_items_count:{add_labels_time_items_count}")
-                created_label_date_counts: Dict[Any, int] = {}
-                label_time_by_key: Dict[str, datetime] = {}
-                for item in add_labels_time_items:
-                    label_dt = parse_datetime(item.get("label_applied_time"))
-                    if not label_dt:
-                        continue
-                    issue_key = item.get("key")
-                    if issue_key:
-                        label_time_by_key[issue_key] = label_dt
-                    label_date = label_dt.date()
-                    if from_date and label_date < from_date:
-                        continue
-                    if to_date and label_date > to_date:
-                        continue
-                    created_label_date_counts[label_date] = created_label_date_counts.get(label_date, 0) + 1
-
-                add_attachemt_time_items = my_jira.getEarliestAttachmentTimeWithSql(created_jql)
-                add_attachemt_time_items_count = len(add_attachemt_time_items)
-                log(f"add_attachemt_time_items_count:{add_attachemt_time_items_count}")
-                created_attachment_date_counts: Dict[Any, int] = {}
-                attachemt_time_by_key: Dict[str, datetime] = {}
-                for item in add_attachemt_time_items:
-                    attachemt_dt = parse_datetime(item.get("attachment_time"))
-                    if not attachemt_dt:
-                        continue
-                    issue_key = item.get("key")
-                    if issue_key:
-                        attachemt_time_by_key[issue_key] = attachemt_dt
-                    created_date = attachemt_dt.date()
-                    if from_date and created_date < from_date:
-                        continue
-                    if to_date and created_date > to_date:
-                        continue
-                    created_attachment_date_counts[created_date] = created_attachment_date_counts.get(created_date, 0) + 1
-
-                priority_time_items = my_jira.getPriorityHighFirstTimeWithSql(created_jql)
-                priority_time_items_count = len(priority_time_items)
-                log(f"priority_time_items_count:{priority_time_items_count}")
-                priority_time_by_key: Dict[str, datetime] = {}
-                for item in priority_time_items:
-                    priority_dt = parse_datetime(item.get("priority_high_time"))
-                    if not priority_dt:
-                        continue
-                    issue_key = item.get("key")
-                    if issue_key:
-                        priority_time_by_key[issue_key] = priority_dt
-
-                log(f"created_attachment_date_counts:{created_attachment_date_counts}")
-                log(f"created_label_date_counts:{created_label_date_counts}")
-
-                delay_minutes_by_date: Dict[Any, List[float]] = {}
-                for issue_key, attachemt_dt in attachemt_time_by_key.items():
-                    label_dt = label_time_by_key.get(issue_key)
-                    if not label_dt:
-                        continue
-                    attachemt_delay_minutes = (label_dt - attachemt_dt).total_seconds() / 60.0
-                    if attachemt_delay_minutes < 0:
-                        continue
-                    created_date = attachemt_dt.date()
-                    if from_date and created_date < from_date:
-                        continue
-                    if to_date and created_date > to_date:
-                        continue
-                    delay_minutes_by_date.setdefault(created_date, []).append(attachemt_delay_minutes)
+                
+                try:
+                    rows = mysql_client.fetchall(
+                        f"""
+                        SELECT `key`, attachment_time, label_time, priority_time, attachemt_delay_minutes, priority_delay_minutes
+                        FROM `{config.mysql_database}`.`{config.mysql_table}`
+                        """
+                    )
+                except Exception as exc:
+                    st.error(str(exc))
+                    rows = []
 
                 import pandas as pd
                 import altair as alt
-                metric_col1, metric_col2 = st.columns(2)
-                metric_col1.metric("创建 Attachment 数量", sum(created_attachment_date_counts.values()))
-                metric_col2.metric("创建 Label 数量", sum(created_label_date_counts.values()))
 
-                date_index = sorted(set(created_label_date_counts) | set(created_attachment_date_counts))
-                if not date_index:
+                if not rows:
                     st.info("暂无数据")
                 else:
-                    rows = []
-                    for date_value in date_index:
-                        date_label = date_value.isoformat()
-                        rows.append(
-                            {
-                                "日期": date_label,
-                                "Attachment数量": created_attachment_date_counts.get(date_value, 0),
-                                "Label数量": created_label_date_counts.get(date_value, 0),
-                            }
-                        )
-
-                    df = pd.DataFrame(rows)
-                    label_stats_df = df
+                    now = datetime.now()
+                    created_label_date_counts: Dict[Any, int] = {}
+                    created_attachment_date_counts: Dict[Any, int] = {}
                     detail_rows = []
-                    for issue_key in sorted(set(attachemt_time_by_key) | set(label_time_by_key) | set(priority_time_by_key)):
-                        attachemt_dt = attachemt_time_by_key.get(issue_key)
-                        label_dt = label_time_by_key.get(issue_key)
-                        priority_dt = priority_time_by_key.get(issue_key)
-                        attachemt_delay_minutes = None
-                        priority_delay_minutes = None
-                        if attachemt_dt and label_dt:
+                    label_filtered_rows = []
+                    no_label_overdue_rows = []
+
+                    for row in rows:
+                        issue_key = row[0]
+                        attachemt_dt = row[1] if isinstance(row[1], datetime) else parse_datetime(str(row[1]) if row[1] else None)
+                        label_dt = row[2] if isinstance(row[2], datetime) else parse_datetime(str(row[2]) if row[2] else None)
+                        priority_dt = row[3] if isinstance(row[3], datetime) else parse_datetime(str(row[3]) if row[3] else None)
+                        attachemt_delay_minutes = float(row[4]) if row[4] is not None else None
+                        priority_delay_minutes = float(row[5]) if row[5] is not None else None
+
+                        if attachemt_delay_minutes is None and attachemt_dt and label_dt:
                             attachemt_delay_minutes = round((label_dt - attachemt_dt).total_seconds() / 60.0, 2)
-                            if attachemt_delay_minutes < 0:
-                                attachemt_delay_minutes = None
-                        if priority_dt and label_dt:
+                        if priority_delay_minutes is None and priority_dt and label_dt:
                             priority_delay_minutes = round((label_dt - priority_dt).total_seconds() / 60.0, 2)
-                            # if priority_delay_minutes < 0:
-                            #     priority_delay_minutes = None
+
+                        if attachemt_dt:
+                            created_date = attachemt_dt.date()
+                            if (not from_date or created_date >= from_date) and (not to_date or created_date <= to_date):
+                                created_attachment_date_counts[created_date] = created_attachment_date_counts.get(created_date, 0) + 1
+
+                        if label_dt:
+                            label_date = label_dt.date()
+                            if (not from_date or label_date >= from_date) and (not to_date or label_date <= to_date):
+                                created_label_date_counts[label_date] = created_label_date_counts.get(label_date, 0) + 1
+                                if (
+                                    attachemt_delay_minutes is not None
+                                    and priority_delay_minutes is not None
+                                    and attachemt_delay_minutes >= threshold_minutes
+                                    and priority_delay_minutes >= threshold_minutes
+                                ):
+                                    label_filtered_rows.append(
+                                        {
+                                            "key": issue_key,
+                                            "attachment_time": attachemt_dt.isoformat() if attachemt_dt else "",
+                                            "label_time": label_dt.isoformat() if label_dt else "",
+                                            "priority_time": priority_dt.isoformat() if priority_dt else "",
+                                            "attachemt_delay_minutes": attachemt_delay_minutes,
+                                            "priority_delay_minutes": priority_delay_minutes,
+                                        }
+                                    )
+                        elif attachemt_dt and priority_dt:
+                            attachment_overdue = (now - attachemt_dt).total_seconds() / 60.0 >= threshold_minutes
+                            priority_overdue = (now - priority_dt).total_seconds() / 60.0 >= threshold_minutes
+                            if attachment_overdue and priority_overdue:
+                                no_label_overdue_rows.append(
+                                    {
+                                        "key": issue_key,
+                                        "attachment_time": attachemt_dt.isoformat() if attachemt_dt else "",
+                                        "label_time": "",
+                                        "priority_time": priority_dt.isoformat() if priority_dt else "",
+                                        "attachemt_delay_minutes": attachemt_delay_minutes,
+                                        "priority_delay_minutes": priority_delay_minutes,
+                                    }
+                                )
+
                         detail_rows.append(
                             {
                                 "key": issue_key,
@@ -1155,93 +1139,105 @@ def render_admin() -> None:
                                 "priority_delay_minutes": priority_delay_minutes,
                             }
                         )
-                    label_detail_df = pd.DataFrame(detail_rows)
-                    st.dataframe(df, use_container_width=True)
 
-                    date_labels = [value.isoformat() for value in date_index]
-                    counts_df = df.melt(
-                        id_vars=["日期"],
-                        value_vars=["Attachment数量", "Label数量"],
-                        var_name="类型",
-                        value_name="数量",
-                    )
-                    chart_counts = alt.Chart(counts_df).mark_bar().encode(
-                        x=alt.X(
-                            "日期", 
-                            sort=date_labels, 
-                            title="日期", 
-                        ),
-                        xOffset=alt.XOffset("类型", sort=["Attachment数量", "Label数量"]),
-                        y=alt.Y("数量:Q", title="数量", stack=None),
-                        color=alt.Color("类型", title="类型"),
-                        tooltip=["日期", "类型", "数量"],
-                    )
-                    st.altair_chart(chart_counts, use_container_width=True)
+                    metric_col1, metric_col2 = st.columns(2)
+                    metric_col1.metric("创建 Attachment 数量", sum(created_attachment_date_counts.values()))
+                    metric_col2.metric("创建 Label 数量", sum(created_label_date_counts.values()))
 
-                    if not label_detail_df.empty and "attachemt_delay_minutes" in label_detail_df.columns:
-                        delay_df = label_detail_df.copy()
-                        if not delay_df.empty:
-                            st.subheader("附件&标签&优先级的总表")
-                            st.dataframe(delay_df, use_container_width=True)
-                            delay_long = delay_df.melt(
-                                id_vars=["key"],
-                                value_vars=["attachemt_delay_minutes", "priority_delay_minutes"],
-                                var_name="类型",
-                                value_name="耗时",
+                    date_index = sorted(set(created_label_date_counts) | set(created_attachment_date_counts))
+                    if date_index:
+                        rows = []
+                        for date_value in date_index:
+                            date_label = date_value.isoformat()
+                            rows.append(
+                                {
+                                    "日期": date_label,
+                                    "Attachment数量": created_attachment_date_counts.get(date_value, 0),
+                                    "Label数量": created_label_date_counts.get(date_value, 0),
+                                }
                             )
-                            delay_long = delay_long.dropna(subset=["耗时"])
-                            if not delay_long.empty:
-                                delay_long["类型"] = delay_long["类型"].replace(
-                                    {
-                                        "attachemt_delay_minutes": "附件->标签",
-                                        "priority_delay_minutes": "优先级->标签",
-                                    }
+
+                        df = pd.DataFrame(rows)
+                        label_stats_df = df
+                        label_detail_df = pd.DataFrame(detail_rows)
+                        st.dataframe(df, use_container_width=True)
+
+                        date_labels = [value.isoformat() for value in date_index]
+                        counts_df = df.melt(
+                            id_vars=["日期"],
+                            value_vars=["Attachment数量", "Label数量"],
+                            var_name="类型",
+                            value_name="数量",
+                        )
+                        chart_counts = alt.Chart(counts_df).mark_bar().encode(
+                            x=alt.X(
+                                "日期",
+                                sort=date_labels,
+                                title="日期",
+                            ),
+                            xOffset=alt.XOffset("类型", sort=["Attachment数量", "Label数量"]),
+                            y=alt.Y("数量:Q", title="数量", stack=None),
+                            color=alt.Color("类型", title="类型"),
+                            tooltip=["日期", "类型", "数量"],
+                        )
+                        st.altair_chart(chart_counts, use_container_width=True)
+
+                        if not label_detail_df.empty:
+                            st.subheader(f"超过{threshold_minutes}分钟后才打标签的Jira")
+                            if label_filtered_rows:
+                                st.dataframe(pd.DataFrame(label_filtered_rows), use_container_width=True)
+                            else:
+                                st.info(f"没有超过{threshold_minutes}分钟后才打标签的Jira")
+                            st.subheader(f"超过{threshold_minutes}分钟还没有打标签的Jira")
+                            if no_label_overdue_rows:
+                                st.dataframe(pd.DataFrame(no_label_overdue_rows), use_container_width=True)
+                            else:
+                                st.info(f"没有超过{threshold_minutes}分钟的未打标签Jira")
+
+                        if not label_detail_df.empty and "attachemt_delay_minutes" in label_detail_df.columns:
+                            delay_df = label_detail_df.copy()
+                            if not delay_df.empty:
+                                st.subheader("附件&标签&优先级的总表")
+                                st.dataframe(delay_df, use_container_width=True)
+                                delay_long = delay_df.melt(
+                                    id_vars=["key"],
+                                    value_vars=["attachemt_delay_minutes", "priority_delay_minutes"],
+                                    var_name="类型",
+                                    value_name="耗时",
                                 )
-                                priority_order = (
-                                    delay_df.dropna(subset=["priority_delay_minutes"])
-                                    .sort_values("priority_delay_minutes", ascending=False)["key"]
-                                    .tolist()
-                                )
-                                if not priority_order:
-                                    priority_order = sorted(delay_df["key"].unique().tolist())
-                                chart_delay = alt.Chart(delay_long).mark_bar(opacity=0.5).encode(
-                                    x=alt.X("key", title="Key", sort=priority_order),
-                                    y=alt.Y(
-                                        "耗时:Q",
-                                        title="时间差(分钟)",
-                                        stack=None,
-                                        scale=alt.Scale(type="symlog", constant=1),
-                                    ),
-                                    color=alt.Color("类型", title="类型"),
-                                    tooltip=["key", "类型", "耗时"],
-                                )
-                                threshold_line = alt.Chart(
-                                    pd.DataFrame({"y": [240]}),
+                                delay_long = delay_long.dropna(subset=["耗时"])
+                                if not delay_long.empty:
+                                    delay_long["类型"] = delay_long["类型"].replace(
+                                        {
+                                            "attachemt_delay_minutes": "附件->标签",
+                                            "priority_delay_minutes": "优先级->标签",
+                                        }
+                                    )
+                                    priority_order = (
+                                        delay_df.dropna(subset=["priority_delay_minutes"])
+                                        .sort_values("priority_delay_minutes", ascending=False)["key"]
+                                        .tolist()
+                                    )
+                                    if not priority_order:
+                                        priority_order = sorted(delay_df["key"].unique().tolist())
+                                    chart_delay = alt.Chart(delay_long).mark_bar(opacity=0.5).encode(
+                                        x=alt.X("key", title="Key", sort=priority_order),
+                                        y=alt.Y(
+                                            "耗时:Q",
+                                            title="时间差(分钟)",
+                                            stack=None,
+                                            scale=alt.Scale(type="symlog", constant=1),
+                                        ),
+                                        color=alt.Color("类型", title="类型"),
+                                        tooltip=["key", "类型", "耗时"],
+                                    )
+                                    threshold_line = alt.Chart(
+                                        pd.DataFrame({"y": [threshold_minutes]}),
                                 ).mark_rule(color="#FF0000", strokeDash=[6, 4]).encode(
                                     y="y:Q"
                                 )
-                                st.caption("说明：attachment_time/attachment_delay_minutes 为 None 表示没有附件，priority_delay_minutes 为 None表示没有打label， 红色虚线代表240分钟，只显示有附件或优先级的Jira。")
+                                st.caption("说明：attachment_time/attachment_delay_minutes 为 None 表示没有附件，priority_delay_minutes 为 None表示没有打label。")
                                 st.altair_chart(chart_delay + threshold_line, use_container_width=True)
- 
-                        if not label_detail_df.empty:
-                            missing_label_df = label_detail_df[(label_detail_df["attachment_time"] != "") & (label_detail_df["priority_time"] != "") & (label_detail_df["label_time"] == "")]
-                            st.subheader("没有打标签的Jira")
-                            if not missing_label_df.empty:
-                                st.dataframe(missing_label_df, use_container_width=True)
-                            else:
-                                st.info("所有Jira都打了标签")
-                            long_priority_df = label_detail_df[
-                                (label_detail_df["priority_delay_minutes"].notna() & (label_detail_df["priority_delay_minutes"] > 240))
-                                & (
-                                    (label_detail_df["attachemt_delay_minutes"].notna() & (label_detail_df["attachemt_delay_minutes"] > 240))
-                                    | label_detail_df["attachemt_delay_minutes"].isna()
-                                )
-                            ]
-                            st.subheader("超过240分钟后才打标签的Jira")
-                            if not long_priority_df.empty:
-                                st.dataframe(long_priority_df, use_container_width=True)
-                            else:
-                                st.info("没有超过240分钟后才打标签的Jira")
 
 
         with col_filters:
@@ -1304,6 +1300,96 @@ def render_admin() -> None:
         with col_content:
             render_logs(log_filters)
 
+    elif admin_tab == "5000agent":
+        st.subheader("点击量统计")
+        col_filters, col_content = st.columns([1, 4])
+        with col_filters:
+            st.subheader("过滤条件")
+            range_option = st.selectbox(
+                "时间范围",
+                options=["全部", "今天", "近7天", "本月", "本年", "自定义"],
+                key="analysis_range_option",
+            )
+            from_date = None
+            to_date = None
+            if range_option == "自定义":
+                from_date = st.date_input("开始日期", key="analysis_from_date")
+                to_date = st.date_input("结束日期", key="analysis_to_date")
+            else:
+                from_value, to_value = build_time_range(range_option)
+                if from_value:
+                    from_date = datetime.fromisoformat(from_value).date()
+                if to_value:
+                    to_date = datetime.fromisoformat(to_value).date()
+
+        with col_content:
+            if not config.mysql_database or not config.mysql_analysis_table:
+                st.warning("请配置 MYSQL_DATABASE 和 MYSQL_ANALYSIS_TABLE")
+            else:
+                where_clauses = []
+                params: List[Any] = []
+                if from_date:
+                    where_clauses.append("create_time >= %s")
+                    params.append(from_date.isoformat())
+                if to_date:
+                    where_clauses.append("create_time <= %s")
+                    params.append(f"{to_date.isoformat()}T23:59:59.999999")
+                where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+
+                try:
+                    columns_rows = mysql_client.fetchall(
+                        f"SHOW COLUMNS FROM `{config.mysql_database}`.`{config.mysql_analysis_table}`"
+                    )
+                    column_names = [row[0] for row in columns_rows]
+                except Exception as exc:
+                    st.error(str(exc))
+                    column_names = []
+
+                try:
+                    data_rows = mysql_client.fetchall(
+                        f"""
+                        SELECT * FROM `{config.mysql_database}`.`{config.mysql_analysis_table}`
+                        {where_sql}
+                        ORDER BY create_time DESC
+                        """,
+                        params=tuple(params),
+                    )
+                except Exception as exc:
+                    st.error(str(exc))
+                    data_rows = []
+
+                if data_rows and column_names:
+                    import pandas as pd
+                    import altair as alt
+
+                    full_df = pd.DataFrame([dict(zip(column_names, row)) for row in data_rows])
+
+
+                    if "create_time" in full_df.columns:
+                        full_df["create_time"] = full_df["create_time"].apply(
+                            lambda value: value if isinstance(value, datetime) else parse_datetime(str(value))
+                        )
+                        clicks_series = (
+                            full_df.dropna(subset=["create_time"])
+                            .assign(date=full_df["create_time"].dt.date)
+                            .groupby("date")
+                            .size()
+                            .reset_index(name="count")
+                        )
+                        if not clicks_series.empty:
+                            st.metric("总点击量", int(clicks_series["count"].sum()))
+                            st.dataframe(full_df, use_container_width=True)
+                            clicks_series["date"] = clicks_series["date"].astype(str)
+                            line = alt.Chart(clicks_series).mark_line(point=True).encode(
+                                x=alt.X("date", title="日期"),
+                                y=alt.Y("count", title="点击量"),
+                                tooltip=["date", "count"],
+                            )
+                            st.altair_chart(line, use_container_width=True)
+                        else:
+                            st.info("暂无点击量数据")
+                else:
+                    st.info("暂无点击量数据")
 
 def render_app() -> None:
     """

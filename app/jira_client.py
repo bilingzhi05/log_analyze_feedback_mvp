@@ -78,7 +78,7 @@ class MyJira:
 
         histories = getattr(getattr(issue, "changelog", None), "histories", [])
         applied_times = []
-        print(f'histories:{histories}')
+        # print(f'histories:{histories}')
         for history in histories:
             for item in history.items:
                 if item.field != "priority":
@@ -111,7 +111,7 @@ class MyJira:
         """
         sql = f"key = {key}"
         try:
-            issues = self.mJira.search_issues(sql)
+            issues = self.search_issues(sql)
         except Exception:
             return "ERROR"
         if not issues:
@@ -134,7 +134,10 @@ class MyJira:
             issue_time = getattr(getattr(issue, "fields", None), "created", None)
             key_time_list.append({"key":issue.key, "create_time":issue_time})
         return key_time_list
-        
+    
+    def get_issue_keys(self, jql: str):
+        issues = self.search_issues(jql)
+        return [issue.key for issue in issues]
     
     def getJiraLen(self, jql, maxResults=99999):
         issues = self.search_issues(jql, maxResults=maxResults)
