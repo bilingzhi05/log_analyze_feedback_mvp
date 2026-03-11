@@ -13,6 +13,7 @@ from streamlit_autorefresh import st_autorefresh
 from bs4 import BeautifulSoup
 from streamlit.runtime.scriptrunner_utils.script_run_context import get_script_run_ctx
 
+
 from app.auth import (
     create_captcha,
     get_failure_count,
@@ -39,6 +40,8 @@ from app.utils import (
     validate_sentiment,
 )
 from app.logger import log
+import pandas as pd
+import altair as alt
 
 
 config = load_config()
@@ -857,31 +860,31 @@ def render_admin() -> None:
     """
     st.header("后台管理")
     logged_in = require_admin_session()
-    if not logged_in:
-        st.subheader("管理员登录")
-        username = st.text_input("账号")
-        password = st.text_input("密码", type="password")
-        captcha_id = st.session_state.get("captcha_id", "")
-        captcha_text = st.session_state.get("captcha_text", "")
-        captcha_code = ""
-        if captcha_text:
-            st.warning(f"验证码：{captcha_text}")
-            captcha_code = st.text_input("验证码")
-        if st.button("登录"):
-            ok, message, data = login_admin(username, password, captcha_id, captcha_code)
-            if ok:
-                st.success(message)
-                st.session_state.pop("captcha_id", None)
-                st.session_state.pop("captcha_text", None)
-                st.rerun()
-            else:
-                if data.get("need_captcha"):
-                    st.session_state.captcha_id = data.get("captcha_id", "")
-                    st.session_state.captcha_text = data.get("captcha_text", "")
-                    st.warning("请填写验证码后重试")
-                else:
-                    st.error(message)
-        return
+    # if not logged_in:
+    #     st.subheader("管理员登录")
+    #     username = st.text_input("账号")
+    #     password = st.text_input("密码", type="password")
+    #     captcha_id = st.session_state.get("captcha_id", "")
+    #     captcha_text = st.session_state.get("captcha_text", "")
+    #     captcha_code = ""
+    #     if captcha_text:
+    #         st.warning(f"验证码：{captcha_text}")
+    #         captcha_code = st.text_input("验证码")
+    #     if st.button("登录"):
+    #         ok, message, data = login_admin(username, password, captcha_id, captcha_code)
+    #         if ok:
+    #             st.success(message)
+    #             st.session_state.pop("captcha_id", None)
+    #             st.session_state.pop("captcha_text", None)
+    #             st.rerun()
+    #         else:
+    #             if data.get("need_captcha"):
+    #                 st.session_state.captcha_id = data.get("captcha_id", "")
+    #                 st.session_state.captcha_text = data.get("captcha_text", "")
+    #                 st.warning("请填写验证码后重试")
+    #             else:
+    #                 st.error(message)
+    #     return
     
     admin_tab = st.sidebar.radio("管理菜单", ["统计信息", "反馈列表","标签统计", "日志记录", "5000agent"], key="admin_tab")
 
@@ -918,8 +921,6 @@ def render_admin() -> None:
 
         recent_data = stats.get("recent_trend", [])
         if recent_data:
-            import pandas as pd
-            import altair as alt
 
             df = pd.DataFrame(recent_data)
             
@@ -1062,9 +1063,6 @@ def render_admin() -> None:
                 except Exception as exc:
                     st.error(str(exc))
                     rows = []
-
-                import pandas as pd
-                import altair as alt
 
                 if not rows:
                     st.info("暂无数据")
@@ -1301,7 +1299,7 @@ def render_admin() -> None:
             render_logs(log_filters)
 
     elif admin_tab == "5000agent":
-        st.subheader("点击量统计")
+        st.subheader("分析问题量统计")
         col_filters, col_content = st.columns([1, 4])
         with col_filters:
             st.subheader("过滤条件")
@@ -1323,73 +1321,312 @@ def render_admin() -> None:
                     to_date = datetime.fromisoformat(to_value).date()
 
         with col_content:
+            analysis_daily_counts = None
+            access_daily_counts = None
+            comment_daily_counts = None
             if not config.mysql_database or not config.mysql_analysis_table:
                 st.warning("请配置 MYSQL_DATABASE 和 MYSQL_ANALYSIS_TABLE")
             else:
-                where_clauses = []
-                params: List[Any] = []
+                analysis_where_clauses = []
+                analysis_params: List[Any] = []
                 if from_date:
-                    where_clauses.append("create_time >= %s")
-                    params.append(from_date.isoformat())
+                    analysis_where_clauses.append("create_time >= %s")
+                    analysis_params.append(from_date.isoformat())
                 if to_date:
-                    where_clauses.append("create_time <= %s")
-                    params.append(f"{to_date.isoformat()}T23:59:59.999999")
-                where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+                    analysis_where_clauses.append("create_time <= %s")
+                    analysis_params.append(f"{to_date.isoformat()}T23:59:59.999999")
+                analysis_where_sql = (
+                    f"WHERE {' AND '.join(analysis_where_clauses)}" if analysis_where_clauses else ""
+                )
 
                 try:
-                    columns_rows = mysql_client.fetchall(
+                    analysis_columns_rows = mysql_client.fetchall(
                         f"SHOW COLUMNS FROM `{config.mysql_database}`.`{config.mysql_analysis_table}`"
                     )
-                    column_names = [row[0] for row in columns_rows]
+                    analysis_column_names = [row[0] for row in analysis_columns_rows]
                 except Exception as exc:
                     st.error(str(exc))
-                    column_names = []
+                    analysis_column_names = []
 
                 try:
-                    data_rows = mysql_client.fetchall(
+                    analysis_rows = mysql_client.fetchall(
                         f"""
                         SELECT * FROM `{config.mysql_database}`.`{config.mysql_analysis_table}`
-                        {where_sql}
+                        {analysis_where_sql}
                         ORDER BY create_time DESC
                         """,
-                        params=tuple(params),
+                        params=tuple(analysis_params),
                     )
                 except Exception as exc:
                     st.error(str(exc))
-                    data_rows = []
+                    analysis_rows = []
 
-                if data_rows and column_names:
-                    import pandas as pd
-                    import altair as alt
+                if analysis_rows and analysis_column_names:
 
-                    full_df = pd.DataFrame([dict(zip(column_names, row)) for row in data_rows])
+                    analysis_df = pd.DataFrame(
+                        [dict(zip(analysis_column_names, row)) for row in analysis_rows]
+                    )
 
 
-                    if "create_time" in full_df.columns:
-                        full_df["create_time"] = full_df["create_time"].apply(
+                    if "create_time" in analysis_df.columns:
+                        analysis_df["create_time"] = analysis_df["create_time"].apply(
                             lambda value: value if isinstance(value, datetime) else parse_datetime(str(value))
                         )
-                        clicks_series = (
-                            full_df.dropna(subset=["create_time"])
-                            .assign(date=full_df["create_time"].dt.date)
+                        if "extra" in analysis_df.columns:
+                            def extract_add_comment_count(value):
+                                if value is None:
+                                    return 0
+                                if isinstance(value, dict):
+                                    raw = value.get("add_comment_count")
+                                    return int(raw) if raw is not None else 0
+                                try:
+                                    parsed = json.loads(value)
+                                except Exception:
+                                    return 0
+                                if isinstance(parsed, dict):
+                                    raw = parsed.get("add_comment_count")
+                                    return int(raw) if raw is not None else 0
+                                return 0
+
+                            analysis_df["add_comment_count"] = analysis_df["extra"].apply(
+                                extract_add_comment_count
+                            )
+                        else:
+                            analysis_df["add_comment_count"] = 0
+                        analysis_daily_counts = (
+                            analysis_df.dropna(subset=["create_time"])
+                            .assign(date=analysis_df["create_time"].dt.date)
                             .groupby("date")
                             .size()
                             .reset_index(name="count")
                         )
-                        if not clicks_series.empty:
-                            st.metric("总点击量", int(clicks_series["count"].sum()))
-                            st.dataframe(full_df, use_container_width=True)
-                            clicks_series["date"] = clicks_series["date"].astype(str)
-                            line = alt.Chart(clicks_series).mark_line(point=True).encode(
-                                x=alt.X("date", title="日期"),
-                                y=alt.Y("count", title="点击量"),
-                                tooltip=["date", "count"],
+                        if not analysis_daily_counts.empty:
+                            analysis_daily_counts = analysis_daily_counts.sort_values("date")
+                            st.metric("总分析问题量", int(analysis_daily_counts["count"].sum()))
+                            st.dataframe(analysis_df, use_container_width=True)
+                            analysis_daily_counts["metric"] = "分析问题量"
+                            comment_daily_counts = (
+                                analysis_df.dropna(subset=["create_time"])
+                                .assign(date=analysis_df["create_time"].dt.date)
+                                .groupby("date")["add_comment_count"]
+                                .sum()
+                                .reset_index(name="count")
                             )
-                            st.altair_chart(line, use_container_width=True)
+                            if not comment_daily_counts.empty:
+                                comment_daily_counts = comment_daily_counts.sort_values("date")
+                                comment_daily_counts["metric"] = "评论次数"
                         else:
-                            st.info("暂无点击量数据")
+                            st.info("暂无分析问题量数据")
                 else:
-                    st.info("暂无点击量数据")
+                    st.info("暂无分析问题量数据")
+            
+            if not config.mysql_database or not config.mysql_access_table:
+                st.warning("请配置 MYSQL_DATABASE 和 MYSQL_ACCESS_TABLE")
+            else:
+                access_where_clauses = []
+                access_params: List[Any] = []
+                if from_date:
+                    access_where_clauses.append("create_time >= %s")
+                    access_params.append(from_date.isoformat())
+                if to_date:
+                    access_where_clauses.append("create_time <= %s")
+                    access_params.append(f"{to_date.isoformat()}T23:59:59.999999")
+                access_where_sql = (
+                    f"WHERE {' AND '.join(access_where_clauses)}" if access_where_clauses else ""
+                )
+
+                try:
+                    access_columns_rows = mysql_client.fetchall(
+                        f"SHOW COLUMNS FROM `{config.mysql_database}`.`{config.mysql_access_table}`"
+                    )
+                    access_column_names = [row[0] for row in access_columns_rows]
+                except Exception as exc:
+                    st.error(str(exc))
+                    access_column_names = []
+
+                try:
+                    access_rows = mysql_client.fetchall(
+                        f"""
+                        SELECT * FROM `{config.mysql_database}`.`{config.mysql_access_table}`
+                        {access_where_sql}
+                        ORDER BY create_time DESC
+                        """,
+                        params=tuple(access_params),
+                    )
+                except Exception as exc:
+                    st.error(str(exc))
+                    access_rows = []
+
+                if access_rows and access_column_names:
+                    access_df = pd.DataFrame(
+                        [dict(zip(access_column_names, row)) for row in access_rows]
+                    )
+
+                    if "create_time" in access_df.columns:
+                        access_df["create_time"] = access_df["create_time"].apply(
+                            lambda value: value if isinstance(value, datetime) else parse_datetime(str(value))
+                        )
+                        if "ip" in access_df.columns:
+                            end_date = to_date or datetime.now().date()
+                            start_dt = (
+                                datetime.combine(from_date, datetime.min.time()) if from_date else None
+                            )
+                            end_dt = datetime.combine(end_date, datetime.max.time())
+                            try:
+                                all_rows = mysql_client.fetchall(
+                                    f"""
+                                    SELECT ip, create_time FROM `{config.mysql_database}`.`{config.mysql_access_table}`
+                                    WHERE create_time <= %s
+                                    """,
+                                    params=(end_dt.isoformat(),),
+                                )
+                            except Exception as exc:
+                                st.error(str(exc))
+                                all_rows = []
+                            if all_rows:
+                                access_all_df = pd.DataFrame(all_rows, columns=["ip", "create_time"])
+                                access_all_df["create_time"] = access_all_df["create_time"].apply(
+                                    lambda value: value if isinstance(value, datetime) else parse_datetime(str(value))
+                                )
+                                first_seen = (
+                                    access_all_df.dropna(subset=["ip", "create_time"])
+                                    .groupby("ip")["create_time"]
+                                    .min()
+                                )
+                                if start_dt is None:
+                                    min_seen = access_all_df["create_time"].min()
+                                    start_dt = min_seen if isinstance(min_seen, datetime) else datetime.min
+                                range_df = (
+                                    access_df.dropna(subset=["ip", "create_time"])
+                                    .loc[
+                                        (access_df["create_time"] >= start_dt)
+                                        & (access_df["create_time"] <= end_dt),
+                                        ["ip", "create_time"],
+                                    ]
+                                    .copy()
+                                )
+                                if not range_df.empty:
+                                    range_df["date"] = range_df["create_time"].dt.date
+                                    first_seen_date = first_seen.dt.date
+                                    daily_rows = []
+                                    for date_value in sorted(range_df["date"].unique()):
+                                        day_ips = (
+                                            range_df.loc[range_df["date"] == date_value, "ip"]
+                                            .dropna()
+                                            .unique()
+                                        )
+                                        new_ips = []
+                                        existing_ips = []
+                                        for ip_value in day_ips:
+                                            first_date = first_seen_date.get(ip_value)
+                                            if first_date is None:
+                                                continue
+                                            if first_date < date_value:
+                                                existing_ips.append(ip_value)
+                                            else:
+                                                new_ips.append(ip_value)
+                                        daily_rows.append(
+                                            {
+                                                "date": str(date_value),
+                                                "metric": "新增用户",
+                                                "count": len(new_ips),
+                                                "ips": "; ".join(sorted(new_ips)),
+                                            }
+                                        )
+                                        daily_rows.append(
+                                            {
+                                                "date": str(date_value),
+                                                "metric": "既有用户",
+                                                "count": len(existing_ips),
+                                                "ips": ",".join(sorted(existing_ips)),
+                                            }
+                                        )
+                                    if daily_rows:
+                                        ip_breakdown_df = pd.DataFrame(daily_rows)
+                                        st.dataframe(ip_breakdown_df, use_container_width=True)
+                                        bar = alt.Chart(ip_breakdown_df).mark_bar().encode(
+                                            x=alt.X("date", title="日期"),
+                                            y=alt.Y("count", title="IP数量"),
+                                            color=alt.Color("metric", title="类型"),
+                                            tooltip=["date", "metric", "count"],
+                                        )
+                                        st.altair_chart(bar, use_container_width=True)
+
+                                        summary_df = (
+                                            ip_breakdown_df.groupby("metric", as_index=False)["count"].sum()
+                                        )
+                                        total_count = int(summary_df["count"].sum())
+                                        if total_count > 0:
+                                            summary_df["percent"] = summary_df["count"] / total_count
+                                        else:
+                                            summary_df["percent"] = 0
+                                        summary_df["label"] = (
+                                            summary_df["count"].astype(str)
+                                            + " ("
+                                            + (summary_df["percent"] * 100).round(1).astype(str)
+                                            + "%)"
+                                        )
+                                        summary_df["metric_order"] = summary_df["metric"].map(
+                                            {"新增用户": 0, "既有用户": 1}
+                                        ).fillna(999)
+                                        pie = alt.Chart(summary_df).mark_arc().encode(
+                                            theta=alt.Theta("count", title="IP数量"),
+                                            color=alt.Color(
+                                                "metric",
+                                                title="类型",
+                                                scale=alt.Scale(domain=["新增用户", "既有用户"]),
+                                            ),
+                                            order=alt.Order("metric_order"),
+                                            tooltip=["metric", "count", "percent"],
+                                        )
+                                        labels = alt.Chart(summary_df).mark_text(
+                                            radius=60,
+                                            align="center",
+                                            baseline="middle",
+                                            fontSize=20,
+                                        ).encode(
+                                            theta=alt.Theta("count", stack=True),
+                                            order=alt.Order("metric_order"),
+                                            text="label",
+                                        )
+                                        st.altair_chart(pie + labels, use_container_width=True)
+                        access_daily_counts = (
+                            access_df.dropna(subset=["create_time"])
+                            .assign(date=access_df["create_time"].dt.date)
+                            .groupby("date")
+                            .size()
+                            .reset_index(name="count")
+                        )
+                        if not access_daily_counts.empty:
+                            access_daily_counts = access_daily_counts.sort_values("date")
+                            st.metric("总访问量", int(access_daily_counts["count"].sum()))
+                            st.dataframe(access_df, use_container_width=True)
+                            access_daily_counts["metric"] = "访问量"
+                        else:
+                            st.info("暂无访问量数据")
+                else:
+                    st.info("暂无访问量数据")
+
+            if (
+                analysis_daily_counts is not None
+                or access_daily_counts is not None
+                or comment_daily_counts is not None
+            ):
+
+                series_frames = [
+                    series
+                    for series in (analysis_daily_counts, access_daily_counts, comment_daily_counts)
+                    if series is not None
+                ]
+                combined_df = pd.concat(series_frames, ignore_index=True)
+                combined_df["date"] = combined_df["date"].astype(str)
+                line = alt.Chart(combined_df).mark_line(point=True).encode(
+                    x=alt.X("date", title="日期"),
+                    y=alt.Y("count", title="数量"),
+                    color=alt.Color("metric", title="类型"),
+                    tooltip=["date", "count", "metric"],
+                )
+                st.altair_chart(line, use_container_width=True)
 
 def render_app() -> None:
     """

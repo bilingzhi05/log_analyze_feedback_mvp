@@ -18,6 +18,7 @@ class AppConfig:
     mysql_database: str
     mysql_table: str
     mysql_analysis_table: str
+    mysql_access_table: str
 
 
 def load_config() -> AppConfig:
@@ -48,5 +49,6 @@ def load_config() -> AppConfig:
         mysql_database=os.getenv("MYSQL_DATABASE", "5000agent_feedback"),
         mysql_table=os.getenv("MYSQL_TABLE", "jira_label_metrics"),
         mysql_analysis_table=os.getenv("MYSQL_ANALYSIS_TABLE", "analysis_runs"),
+        mysql_access_table=os.getenv("MYSQL_ACCESS_TABLE", "access_logs"),
         # my_jira = MyJira("https://jira.amlogic.com", "lingzhi.bi", "Qwer!23456")
     )
