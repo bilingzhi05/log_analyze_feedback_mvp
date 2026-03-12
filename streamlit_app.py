@@ -1156,31 +1156,31 @@ def render_admin() -> None:
 
     logged_in = require_admin_session()
     admin_tab = None
-    # if not logged_in:
-    #     st.subheader("管理员登录")
-    #     username = st.text_input("账号")
-    #     password = st.text_input("密码", type="password")
-    #     captcha_id = st.session_state.get("captcha_id", "")
-    #     captcha_text = st.session_state.get("captcha_text", "")
-    #     captcha_code = ""
-    #     if captcha_text:
-    #         st.warning(f"验证码：{captcha_text}")
-    #         captcha_code = st.text_input("验证码")
-    #     if st.button("登录"):
-    #         ok, message, data = login_admin(username, password, captcha_id, captcha_code)
-    #         if ok:
-    #             st.success(message)
-    #             st.session_state.pop("captcha_id", None)
-    #             st.session_state.pop("captcha_text", None)
-    #             st.rerun()
-    #         else:
-    #             if data.get("need_captcha"):
-    #                 st.session_state.captcha_id = data.get("captcha_id", "")
-    #                 st.session_state.captcha_text = data.get("captcha_text", "")
-    #                 st.warning("请填写验证码后重试")
-    #             else:
-    #                 st.error(message)
-    #     return
+    if not logged_in:
+        st.subheader("管理员登录")
+        username = st.text_input("账号")
+        password = st.text_input("密码", type="password")
+        captcha_id = st.session_state.get("captcha_id", "")
+        captcha_text = st.session_state.get("captcha_text", "")
+        captcha_code = ""
+        if captcha_text:
+            st.warning(f"验证码：{captcha_text}")
+            captcha_code = st.text_input("验证码")
+        if st.button("登录"):
+            ok, message, data = login_admin(username, password, captcha_id, captcha_code)
+            if ok:
+                st.success(message)
+                st.session_state.pop("captcha_id", None)
+                st.session_state.pop("captcha_text", None)
+                st.rerun()
+            else:
+                if data.get("need_captcha"):
+                    st.session_state.captcha_id = data.get("captcha_id", "")
+                    st.session_state.captcha_text = data.get("captcha_text", "")
+                    st.warning("请填写验证码后重试")
+                else:
+                    st.error(message)
+        return
     admin_page = st.session_state.get("admin_page", "5000agent 反馈页")
     admin_tab = st.session_state.get("admin_tab", "反馈总表")
     with st.sidebar:
