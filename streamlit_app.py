@@ -625,7 +625,7 @@ def stats_feedbacks_range(
         jira_link = f"https://jira.amlogic.com/browse/{jira_key}" if jira_key else "-"
         detail_rows.append(
             {
-                "日期": day,
+                "日期": create_at,
                 "建议内容": item.get("content_text") or "",
                 "工单链接": jira_link,
                 "状态": status_value,
@@ -1390,7 +1390,7 @@ def render_admin() -> None:
                 if table_rows:
                     filtered_rows = [row for row in table_rows if (row.get("建议内容") or "").strip()]
                     if filtered_rows:
-                        st.table(pd.DataFrame(filtered_rows))
+                        st.dataframe(pd.DataFrame(filtered_rows), use_container_width=True)
                     else:
                         st.info("暂无明细数据")
                 else:
@@ -2169,5 +2169,5 @@ def get_requested_page() -> str:
 if __name__ == "__main__":
     render_app()
 
-# cd /home/amlogic/FAE/AutoLog/lingzhi.bi/log_analyze_feedback_mvp && source /home/amlogic/FAE/AutoLog/lingzhi.bi/log_analyze_feedback_mvp/310venv/bin/activate && nohup streamlit run streamlit_app.py --server.port 8053 --server.headless true &
+# cd /home/amlogic/FAE/AutoLog/lingzhi.bi/log_analyze_feedback_mvp && source /home/amlogic/FAE/AutoLog/lingzhi.bi/log_analyze_feedback_mvp/310venv/bin/activate && nohup streamlit run streamlit_app.py --server.port 8054 --server.headless true &
 # 
