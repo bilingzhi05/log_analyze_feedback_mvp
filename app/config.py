@@ -19,6 +19,7 @@ class AppConfig:
     mysql_table: str
     mysql_analysis_table: str
     mysql_access_table: str
+    mysql_feedback_table: str
 
 
 def load_config() -> AppConfig:
@@ -50,5 +51,6 @@ def load_config() -> AppConfig:
         mysql_table=os.getenv("MYSQL_TABLE", "jira_label_metrics"),
         mysql_analysis_table=os.getenv("MYSQL_ANALYSIS_TABLE", "analysis_runs"),
         mysql_access_table=os.getenv("MYSQL_ACCESS_TABLE", "access_logs"),
+        mysql_feedback_table=os.getenv("MYSQL_FEEDBACK_TABLE", "used_feedback"),
         # my_jira = MyJira("https://jira.amlogic.com", "lingzhi.bi", "Qwer!23456")
     )

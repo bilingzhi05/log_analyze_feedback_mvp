@@ -149,7 +149,7 @@ class MySQLClient:
         table=None,
     ):
         target_database = database or self.database
-        target_table = table or self.table
+        target_table = table
         if not target_database:
             raise ValueError("Database name is required")
         if not target_table:
@@ -173,6 +173,7 @@ class MySQLClient:
         )
         self._conn.commit()
         self.database = target_database
+        return int(cur.lastrowid or 0)
 
     def feedback_exists_by_analysis_result(
         self,
