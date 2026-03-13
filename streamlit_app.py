@@ -416,6 +416,7 @@ def list_feedbacks(
     items = []
     for row in rows:
         feedback_id, create_time, feedback, feedback_suggestion, ip, extra = row
+        log(f"feedback_id={feedback_id} create_time={create_time} feedback={feedback} feedback_suggestion={feedback_suggestion} ip={ip} extra={extra}")
         content_html = feedback_suggestion or ""
         try:
             summary_text = BeautifulSoup(content_html, "html.parser").get_text()
@@ -2070,7 +2071,36 @@ def render_admin() -> None:
                     for series in (analysis_daily_counts, access_daily_counts, comment_daily_counts)
                     if series is not None
                 ]
-                combined_df = pd.concat(series_frames, ignore_index=True)
+                date_values = pd.concat(
+                    [series["date"] for series in series_frames if not series.empty],
+                    ignore_index=True,
+                )
+                if not date_values.empty:
+                    min_date = date_values.min()
+                    max_date = date_values.max()
+                    full_dates = pd.date_range(min_date, max_date, freq="D").date
+                    filled_frames = []
+                    for series in series_frames:
+                        if series.empty:
+                            continue
+                        metric_value = series["metric"].iloc[0] if "metric" in series.columns else None
+                        filled = (
+                            series[["date", "count"]]
+                            .set_index("date")
+                            .reindex(full_dates, fill_value=0)
+                            .rename_axis("date")
+                            .reset_index()
+                        )
+                        if metric_value is not None:
+                            filled["metric"] = metric_value
+                        filled_frames.append(filled)
+                    combined_df = (
+                        pd.concat(filled_frames, ignore_index=True)
+                        if filled_frames
+                        else pd.DataFrame(columns=["date", "count", "metric"])
+                    )
+                else:
+                    combined_df = pd.concat(series_frames, ignore_index=True)
                 combined_df["date"] = combined_df["date"].astype(str)
                 y_max = float(combined_df["count"].max() or 0)
                 y_pad = max(1.0, y_max * 0.15)
