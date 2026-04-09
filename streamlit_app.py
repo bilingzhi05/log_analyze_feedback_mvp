@@ -1776,13 +1776,16 @@ def render_admin() -> None:
 
         with col_content:
             analysis_daily_counts = None
+            all_analysis_daily_counts = None
             access_daily_counts = None
             comment_daily_counts = None
             analysis_df = None
+            all_analysis_df = None
             access_df = None
             ip_breakdown_df = None
             ip_summary_df = None
             analysis_total = None
+            all_analysis_total = None
             access_total = None
             comment_total = None
             if from_date and to_date:
@@ -1836,7 +1839,6 @@ def render_admin() -> None:
                         [dict(zip(analysis_column_names, row)) for row in analysis_rows]
                     )
 
-
                     if "create_time" in analysis_df.columns:
                         analysis_df["create_time"] = analysis_df["create_time"].apply(
                             lambda value: value if isinstance(value, datetime) else parse_datetime(str(value))
@@ -1872,7 +1874,7 @@ def render_admin() -> None:
                         if not analysis_daily_counts.empty:
                             analysis_daily_counts = analysis_daily_counts.sort_values("date")
                             analysis_total = int(analysis_daily_counts["count"].sum())
-                            analysis_daily_counts["metric"] = "分析问题量"
+                            analysis_daily_counts["metric"] = "页面分析问题量"
                             comment_daily_counts = (
                                 analysis_df.dropna(subset=["create_time"])
                                 .assign(date=analysis_df["create_time"].dt.date)
@@ -1884,6 +1886,51 @@ def render_admin() -> None:
                                 comment_daily_counts = comment_daily_counts.sort_values("date")
                                 comment_daily_counts["metric"] = "评论次数"
                                 comment_total = int(comment_daily_counts["count"].sum())
+                        # 读取全量分析库的数据（仿照上面的分析逻辑）
+                        if config.mysql_all_analysis_database and config.mysql_all_analysis_table:
+                            try:
+                                all_analysis_columns_rows = mysql_client.fetchall(
+                                    f"SHOW COLUMNS FROM `{config.mysql_all_analysis_database}`.`{config.mysql_all_analysis_table}`"
+                                )
+                                all_analysis_column_names = [row[0] for row in all_analysis_columns_rows]
+                            except Exception as exc:
+                                st.error(str(exc))
+                                all_analysis_column_names = []
+
+                            try:
+                                all_analysis_rows = mysql_client.fetchall(
+                                    f"""
+                                    SELECT * FROM `{config.mysql_all_analysis_database}`.`{config.mysql_all_analysis_table}`
+                                    {analysis_where_sql}
+                                    ORDER BY create_time DESC
+                                    """,
+                                    params=tuple(analysis_params),
+                                )
+                            except Exception as exc:
+                                st.error(str(exc))
+                                all_analysis_rows = []
+
+                            if all_analysis_rows and all_analysis_column_names:
+                                all_analysis_df = pd.DataFrame(
+                                    [dict(zip(all_analysis_column_names, row)) for row in all_analysis_rows]
+                                )
+                                if "create_time" in all_analysis_df.columns:
+                                    all_analysis_df["create_time"] = all_analysis_df["create_time"].apply(
+                                        lambda value: value
+                                        if isinstance(value, datetime)
+                                        else parse_datetime(str(value))
+                                    )
+                                    all_analysis_daily_counts = (
+                                        all_analysis_df.dropna(subset=["create_time"])
+                                        .assign(date=all_analysis_df["create_time"].dt.date)
+                                        .groupby("date")
+                                        .size()
+                                        .reset_index(name="count")
+                                    )
+                                    if not all_analysis_daily_counts.empty:
+                                        all_analysis_daily_counts = all_analysis_daily_counts.sort_values("date")
+                                        all_analysis_total = int(all_analysis_daily_counts["count"].sum())
+                                        all_analysis_daily_counts["metric"] = "全部分析问题量"
                         else:
                             st.info("暂无分析问题量数据")
                 else:
@@ -2047,28 +2094,42 @@ def render_admin() -> None:
                 else:
                     st.info("暂无访问量数据")
 
-            if analysis_total is not None or access_total is not None or comment_total is not None:
+            if (
+                analysis_total is not None
+                or all_analysis_total is not None
+                or access_total is not None
+                or comment_total is not None
+            ):
                 st.markdown(f"{range_label}统计")
-                metric_col1, metric_col2, metric_col3 = st.columns(3)
+                metric_col1, metric_col2, metric_col3, metric_col4 = st.columns(4)
                 with metric_col1:
-                    if analysis_total is not None:
-                        st.metric("分析问题量", analysis_total)
+                    if all_analysis_total is not None:
+                        st.metric("全部分析问题量", all_analysis_total)
                 with metric_col2:
+                    if analysis_total is not None:
+                        st.metric("页面分析问题量", analysis_total)
+                with metric_col3:
                     if access_total is not None:
                         st.metric("访问量", access_total)
-                with metric_col3:
+                with metric_col4:
                     if comment_total is not None:
                         st.metric("评论次数", comment_total)
 
             if (
                 analysis_daily_counts is not None
+                or all_analysis_daily_counts is not None
                 or access_daily_counts is not None
                 or comment_daily_counts is not None
             ):
 
                 series_frames = [
                     series
-                    for series in (analysis_daily_counts, access_daily_counts, comment_daily_counts)
+                    for series in (
+                        analysis_daily_counts,
+                        all_analysis_daily_counts,
+                        access_daily_counts,
+                        comment_daily_counts,
+                    )
                     if series is not None
                 ]
                 date_values = pd.concat(
@@ -2151,8 +2212,12 @@ def render_admin() -> None:
                     st.altair_chart(ip_pie, use_container_width=True)
 
             if analysis_df is not None and not analysis_df.empty:
-                st.subheader("分析问题量明细")
+                st.subheader("页面分析问题量明细")
                 st.dataframe(analysis_df, use_container_width=True)
+
+            if all_analysis_df is not None and not all_analysis_df.empty:
+                st.subheader("分析问题量明细(全部)")
+                st.dataframe(all_analysis_df, use_container_width=True)
 
             if access_df is not None and not access_df.empty:
                 st.subheader("访问量明细")
