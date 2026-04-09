@@ -2054,7 +2054,7 @@ def render_admin() -> None:
                                                 "date": str(date_value),
                                                 "metric": "既有用户",
                                                 "count": len(existing_ips),
-                                                "ips": ",".join(sorted(existing_ips)),
+                                                "ips": "; ".join(sorted(existing_ips)),
                                             }
                                         )
                                     if daily_rows:
